@@ -1,0 +1,14 @@
+{
+  "name": "6PySCH & Contiki-NG Cloud Simulator",
+  "image": "contiker/contiki-ng:latest",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-vscode.cpptools"
+      ]
+    }
+  },
+  "postCreateCommand": "pip3 install numpy scipy matplotlib && mkdir -p Log_Files Statistics Realdata contiki-ng-define",
+  "remoteUser": "user"
+}
