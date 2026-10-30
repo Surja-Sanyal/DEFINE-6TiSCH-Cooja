@@ -1,0 +1,39 @@
+name: Run 6TiSCH DEFINE Simulations
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  simulate-and-plot:
+    runs-on: ubuntu-latest
+    container:
+      image: contiker/contiki-ng:latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Python Packages
+        run: pip3 install numpy scipy matplotlib
+
+      - name: Ensure Realdata and Output Folders Exist
+        run: |
+          mkdir -p Realdata Statistics Log_Files
+          if [ ! -f Realdata/_realdata_.txt ]; then
+            python3 -c "import numpy as np; rng=np.random.default_rng(2); np.savetxt('Realdata/_realdata_.txt', rng.integers(1,10000,size=(10000,2)), fmt='%d', delimiter=',')"
+          fi
+
+      - name: Run Python Simulation & Plot Results
+        run: |
+          python3 -c "import 6PySCH as sim; sim.NODES=[50, 100, 200, 300, 400, 500]; sim.SLOTFRAME_SIZES=[101]; sim.EB_INTERVALS=[4]; sim.CHANNELS=[16]; sim.SIMS=2; sim.main()"
+          python3 scripts/plot_results.py
+
+      - name: Upload Statistics and Plots
+        uses: actions/upload-artifact@v4
+        with:
+          name: define-simulation-outputs
+          path: |
+            Statistics/
+            *.png

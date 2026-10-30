@@ -1,6 +1,15 @@
 {
   "name": "6PySCH & Contiki-NG Cloud Simulator",
   "image": "contiker/contiki-ng:latest",
+  "features": {
+    "ghcr.io/devcontainers/features/desktop-lite:1": {}
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Cooja Browser GUI Desktop"
+    }
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -9,6 +18,5 @@
       ]
     }
   },
-  "postCreateCommand": "pip3 install numpy scipy matplotlib && mkdir -p Log_Files Statistics Realdata contiki-ng-define",
-  "remoteUser": "user"
+  "postCreateCommand": "sudo chown -R user:user /home/user/.config && git config --global --add safe.directory '*' && pip3 install numpy scipy matplotlib && mkdir -p Log_Files Statistics Realdata"
 }

@@ -1,0 +1,26 @@
+{
+  "configurations": [
+    {
+      "name": "Contiki-NG Z1 Mote",
+      "includePath": [
+        "${workspaceFolder}/contiki-ng-define/**",
+        "${workspaceFolder}/experiments/define-sync/**"
+      ],
+      "defines": [
+        "NETSTACK_CONF_WITH_IPV6=1",
+        "SYNC_SCHEME=1",
+        "SF_LENGTH=101",
+        "NUM_CHANNELS=16",
+        "EB_MULT=1",
+        "ATP_SUBSLOTS=2",
+        "CONTIKI=1",
+        "CONTIKI_TARGET_Z1=1"
+      ],
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}
