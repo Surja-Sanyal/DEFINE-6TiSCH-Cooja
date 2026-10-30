@@ -16,6 +16,17 @@ EXP_DIR = os.path.join(ROOT_DIR, "experiments", "define-sync")
 STAT_DIR = os.path.join(ROOT_DIR, "Statistics")
 REALDATA_PATH = os.path.join(ROOT_DIR, "Realdata", "_realdata_.txt")
 
+
+import glob
+
+# Automatically clear old stats at the start of a run to prevent data mixing
+for old_file in glob.glob(os.path.join(STAT_DIR, "*stats*.txt")) + glob.glob(os.path.join(STAT_DIR, "*.csv")):
+    try:
+        os.remove(old_file)
+    except OSError as e:
+        print(f"Error cleaning old file {old_file}: {e}")
+
+
 # Locate Contiki-NG Cooja directory (local submodule or Docker container path)
 COOJA_DIR = os.path.join(ROOT_DIR, "contiki-ng-define", "tools", "cooja")
 if not os.path.exists(COOJA_DIR):

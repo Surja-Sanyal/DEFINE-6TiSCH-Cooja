@@ -1,39 +1,35 @@
-name: Run 6TiSCH DEFINE Simulations
+name: Cooja 6TiSCH Full Campaign Sweep
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
 
 jobs:
-  simulate-and-plot:
+  simulate:
     runs-on: ubuntu-latest
-    container:
-      image: contiker/contiki-ng:latest
+    container: contiker/contiki-ng:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [1, 2, 3, 4, 5, 6, 7, 8]
+        nodes: [50, 250, 500]              # 3 density points
+        sf_len: [23, 61, 101]              # 3 slotframe points
+        eb_mult: [1, 2, 4]                 # 3 EB interval variations
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository & submodules
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Install Python Packages
-        run: pip3 install numpy scipy matplotlib
-
-      - name: Ensure Realdata and Output Folders Exist
+      - name: Run Cooja Headless Simulation
         run: |
-          mkdir -p Realdata Statistics Log_Files
-          if [ ! -f Realdata/_realdata_.txt ]; then
-            python3 -c "import numpy as np; rng=np.random.default_rng(2); np.savetxt('Realdata/_realdata_.txt', rng.integers(1,10000,size=(10000,2)), fmt='%d', delimiter=',')"
-          fi
+          apt-get update && apt-get install -y python3-pip
+          pip3 install numpy matplotlib --break-system-packages
 
-      - name: Run Python Simulation & Plot Results
-        run: |
-          python3 -c "import 6PySCH as sim; sim.NODES=[50, 100, 200, 300, 400, 500]; sim.SLOTFRAME_SIZES=[101]; sim.EB_INTERVALS=[4]; sim.CHANNELS=[16]; sim.SIMS=2; sim.main()"
-          python3 scripts/plot_results.py
+          python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=${{ matrix.scheme }}, n_nodes=${{ matrix.nodes }}, area=200, n_ch=16, sf_len=${{ matrix.sf_len }}, eb_mult=${{ matrix.eb_mult }}, use_z1=False)"
 
-      - name: Upload Statistics and Plots
+      - name: Upload Statistics Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: define-simulation-outputs
-          path: |
-            Statistics/
-            *.png
+          name: stats-s${{ matrix.scheme }}-n${{ matrix.nodes }}-sf${{ matrix.sf_len }}-eb${{ matrix.eb_mult }}
+          path: Statistics/

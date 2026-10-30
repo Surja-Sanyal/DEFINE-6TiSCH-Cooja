@@ -1102,6 +1102,356 @@
       </interface_config>
       <motetype_identifier>cooja_define</motetype_identifier>
     </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>51.0</x>
+        <y>7.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>77</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>2.0</x>
+        <y>105.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>78</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>151.0</x>
+        <y>101.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>79</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>93.0</x>
+        <y>167.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>80</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>61.0</x>
+        <y>68.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>81</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>65.0</x>
+        <y>157.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>82</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>88.0</x>
+        <y>68.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>83</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>169.0</x>
+        <y>116.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>84</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>37.0</x>
+        <y>26.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>85</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>34.0</x>
+        <y>125.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>86</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>63.0</x>
+        <y>66.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>87</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>107.0</x>
+        <y>58.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>88</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>2.0</x>
+        <y>22.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>89</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>149.0</x>
+        <y>85.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>90</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>127.0</x>
+        <y>31.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>91</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>179.0</x>
+        <y>184.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>92</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>134.0</x>
+        <y>78.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>93</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>139.0</x>
+        <y>124.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>94</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>142.0</x>
+        <y>186.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>95</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>198.0</x>
+        <y>68.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>96</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>75.0</x>
+        <y>89.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>97</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>45.0</x>
+        <y>105.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>98</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>52.0</x>
+        <y>40.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>99</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>45.0</x>
+        <y>37.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>100</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
+    <mote>
+      <breakpoints />
+      <interface_config>
+        org.contikios.cooja.interfaces.Position
+        <x>89.0</x>
+        <y>140.0</y>
+        <z>0.0</z>
+      </interface_config>
+      <interface_config>
+        org.contikios.cooja.contikimote.interfaces.ContikiMoteID
+        <id>101</id>
+      </interface_config>
+      <motetype_identifier>cooja_define</motetype_identifier>
+    </mote>
   </simulation>
   <plugin>
     org.contikios.cooja.plugins.ScriptRunner
@@ -1109,7 +1459,7 @@
       <script>
         TIMEOUT(3600000);
         var joined = 0;
-        var target = 75;
+        var target = 100;
         while (joined &lt; target) {
           YIELD();
           if (msg.contains("CSV_JOIN")) {
