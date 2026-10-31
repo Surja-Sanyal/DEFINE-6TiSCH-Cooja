@@ -22,6 +22,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Run Cooja Headless Simulation
         run: |
           mkdir -p /home/user
@@ -37,7 +43,7 @@ jobs:
           # Clear pre-existing Statistics files so each container only uploads its own newly generated row
           rm -rf Statistics/*
 
-          python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=${{ matrix.scheme }}, n_nodes=${{ matrix.nodes }}, area=200, n_ch=16, sf_len=${{ matrix.sf_len }}, eb_mult=${{ matrix.eb_mult }}, use_z1=False)"
+          python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=${{ matrix.scheme }}, n_nodes=${{ matrix.nodes }}, n_ch=16, sf_len=${{ matrix.sf_len }}, eb_mult=${{ matrix.eb_mult }}, use_z1=False)"
 
       - name: Upload Statistics Artifact
         uses: actions/upload-artifact@v4
