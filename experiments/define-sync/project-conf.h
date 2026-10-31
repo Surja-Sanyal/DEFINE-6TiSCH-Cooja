@@ -34,6 +34,9 @@
 #define TSCH_CALLBACK_NEW_TIME_SOURCE define_on_new_time_source
 #define TSCH_CONF_EB_PERIOD (EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 
+/* Ensure Enhanced Beacons advertise the custom slotframe schedule */
+#define TSCH_PACKET_CONF_EB_WITH_SLOTFRAME_AND_LINK 1
+
 /* Channel hopping sequence length adjustment (4, 8, 12, 16) */
 #if NUM_CHANNELS == 4
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE TSCH_HOPPING_SEQUENCE_4_4

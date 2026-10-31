@@ -87,7 +87,7 @@ python3 -c "import scripts.run_cooja_headless as r; coords = r.load_realdata_coo
 
 Running a Full-Scale Simulation WITHOUT GUI:
 
-python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=1, n_nodes=200, area=200, n_ch=16, sf_len=101, eb_mult=1, use_z1=False)"
+python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=1, n_nodes=200, n_ch=16, sf_len=101, eb_mult=1, use_z1=False)"
 
 
 

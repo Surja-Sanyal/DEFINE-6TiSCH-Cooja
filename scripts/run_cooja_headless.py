@@ -172,8 +172,18 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
         f.write(csc_content)
 
 
-def run_cooja_and_parse(scheme_id, n_nodes=50, area=100, n_ch=16, sf_len=101, eb_mult=1, use_z1=None):
+def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, eb_mult=1, use_z1=None):
     os.makedirs(STAT_DIR, exist_ok=True)
+    
+    # Scale simulation area dynamically based on node count to maintain consistent density
+    AREA_MAP = {
+        50: 100,
+        250: 250,
+        500: 350
+    }
+    if area is None:
+        area = AREA_MAP.get(n_nodes, 200)
+
     coords = load_realdata_coords(n_nodes, area)
     csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}.csc")
     generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, use_z1=use_z1)
@@ -185,10 +195,9 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=100, n_ch=16, sf_len=101, eb
         env["PATH"] = f"{java17_path}/bin:" + env.get("PATH", "")
 
     cmd = ["./gradlew", "run", f"--args=--no-gui {csc_path}"]
-    print(f"Executing: {' '.join(cmd)} in {COOJA_DIR}")
+    print(f"Executing: {' '.join(cmd)} in {COOJA_DIR} (Nodes: {n_nodes}, Area: {area}m)")
     proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
     
-    # Fail loudly if Gradle/Cooja returned an error code
     if proc.returncode != 0:
         print("--- COOJA STDOUT ---")
         print(proc.stdout)
@@ -196,10 +205,17 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=100, n_ch=16, sf_len=101, eb
         print(proc.stderr)
         raise RuntimeError(f"Cooja simulation failed with exit code {proc.returncode}")
 
+    # Read Cooja test log directly from COOJA.testlog where log.log writes
+    testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
+    log_lines = []
+    if os.path.exists(testlog_path):
+        with open(testlog_path, "r") as f:
+            log_lines = f.readlines()
+
     pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)")
     asns, tx_ticks, rx_ticks = [], [], []
 
-    for line in proc.stdout.splitlines():
+    for line in log_lines:
         m = pattern.search(line)
         if m:
             asns.append(int(m.group(2)))
@@ -219,7 +235,7 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=100, n_ch=16, sf_len=101, eb
         fp.write(",".join(map(str, row)) + ",\n")
 
     mode_str = "Z1" if (USE_Z1 if use_z1 is None else use_z1) else "COOJA-NATIVE"
-    print(f"[{mode_str} | Scheme {scheme_id} ({stat_key.upper()})] Joined: {num_joined}/{n_nodes}, Sync Time: {total_time:.2f}s")
+    print(f"[{mode_str} | Scheme {scheme_id} ({stat_key.upper()})] Nodes: {n_nodes}, Area: {area}m | Joined: {num_joined}/{n_nodes}, Sync Time: {total_time:.2f}s")
 
 
 if __name__ == "__main__":
@@ -233,7 +249,8 @@ if __name__ == "__main__":
             for eb_mult in EB_LIST:
                 for n_nodes in NODES_LIST:
                     for scheme in range(1, 9):
+                        # Correct invocation (omit area so it scales automatically via AREA_MAP)
                         run_cooja_and_parse(
-                            scheme_id=scheme, n_nodes=n_nodes, area=200,
+                            scheme_id=scheme, n_nodes=n_nodes,
                             n_ch=n_ch, sf_len=sf_len, eb_mult=eb_mult
                         )

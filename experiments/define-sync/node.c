@@ -141,6 +141,7 @@ PROCESS_THREAD(define_node_process, ev, data)
 {
   static struct etimer check_timer;
   PROCESS_BEGIN();
+  LOG_INFO("BOOT_CHECK: node_id=%u scheme=%d sf=%d\n", (unsigned)node_id, SYNC_SCHEME, SF_LENGTH);
 
   sf_min = tsch_schedule_get_slotframe_by_handle(0);
 
@@ -157,7 +158,7 @@ PROCESS_THREAD(define_node_process, ev, data)
   while(1) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&check_timer));
 
-    if(!join_logged && tsch_is_associated && NETSTACK_ROUTING.node_is_reachable()) {
+    if(!join_logged && tsch_is_associated) {
       energest_flush();
       LOG_INFO("CSV_JOIN,id=%u,asn=%lu,cpu=%lu,lpm=%lu,tx=%lu,rx=%lu\n",
                (unsigned)node_id,
