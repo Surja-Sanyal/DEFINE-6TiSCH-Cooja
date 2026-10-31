@@ -53,6 +53,9 @@ slotframe_callback(void *ptr)
     uint32_t sf_num = (uint32_t)(tsch_current_asn.ls4b / SF_LENGTH);
     int nbrs = uip_ds6_nbr_num();
     clock_time_t base_sf_dur = (clock_time_t)(EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100));
+    if(base_sf_dur == 0) {
+      base_sf_dur = 1;
+    }
 
     (void)sf_num;
     (void)nbrs;
@@ -76,6 +79,9 @@ slotframe_callback(void *ptr)
       p_eb = 0.01;
     }
     clock_time_t period = (clock_time_t)((double)base_sf_dur / p_eb);
+    if(period == 0) {
+      period = 1; // Prevent division/modulo by zero inside TSCH timer
+    }
     tsch_set_eb_period(period);
 
 #elif SYNC_SCHEME == 2 /* 2: 6TiSCH-MC (RFC 8180 Default) */
