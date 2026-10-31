@@ -100,8 +100,10 @@ jobs:
 
       - name: Auto-Commit Merged Results to Repository
         run: |
+          rm -rf tmp_artifacts
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Statistics/ *.png Plots/ 2>/dev/null || git add Statistics/
-          git diff --staged --quiet || (git commit -m "Auto-update merged 216-job Cooja statistics and plots" && git pull --rebase origin main && git push origin main)
+          git add -A Statistics/
+          find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
+          git diff --staged --quiet || (git commit -m "Auto-update merged 216-job Cooja statistics and plots" && git pull --rebase --autostash origin main && git push origin main)
