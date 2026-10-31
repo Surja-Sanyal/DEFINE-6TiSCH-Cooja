@@ -17,11 +17,9 @@ MECHANISMS = {
     "s":   ("EASE",      "#e377c2", "*", "--"),
 }
 
-def load_scheme_matrix(prefix):
-    # Explicitly target Cooja simulation stats files
+def load_scheme_matrix(prefix, target_sf=61, target_eb=1):
     candidates = glob.glob(os.path.join(STAT_DIR, f"_{prefix}_cooja_stats_.txt"))
     if not candidates:
-        # Fallback to standard stats if cooja stats aren't found
         candidates = glob.glob(os.path.join(STAT_DIR, f"_{prefix}_stats_.txt"))
     if not candidates:
         return None
@@ -29,7 +27,14 @@ def load_scheme_matrix(prefix):
     data = np.loadtxt(candidates[0], delimiter=",", usecols=range(12))
     if data.ndim == 1:
         data = data.reshape(1, -1)
-    return data[data[:, 0].argsort()]
+    
+    # Filter for the specific slotframe length (col index 3) and EB multiplier (col index 4)
+    # Columns in row: [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, ...]
+    filtered = data[(data[:, 3] == target_sf) & (data[:, 4] == target_eb)]
+    if len(filtered) == 0:
+        filtered = data # Fallback if exact match isn't found
+        
+    return filtered[filtered[:, 0].argsort()]
 
 def plot_metric(col_idx, ylabel, filename, scale=1.0):
     plt.figure(figsize=(7, 5), dpi=300)

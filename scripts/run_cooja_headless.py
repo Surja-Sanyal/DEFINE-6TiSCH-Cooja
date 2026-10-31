@@ -185,7 +185,16 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=100, n_ch=16, sf_len=101, eb
         env["PATH"] = f"{java17_path}/bin:" + env.get("PATH", "")
 
     cmd = ["./gradlew", "run", f"--args=--no-gui {csc_path}"]
+    print(f"Executing: {' '.join(cmd)} in {COOJA_DIR}")
     proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
+    
+    # Fail loudly if Gradle/Cooja returned an error code
+    if proc.returncode != 0:
+        print("--- COOJA STDOUT ---")
+        print(proc.stdout)
+        print("--- COOJA STDERR ---")
+        print(proc.stderr)
+        raise RuntimeError(f"Cooja simulation failed with exit code {proc.returncode}")
 
     pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)")
     asns, tx_ticks, rx_ticks = [], [], []
