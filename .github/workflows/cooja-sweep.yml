@@ -23,6 +23,14 @@ jobs:
         run: |
           mkdir -p /home/user
           ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
+
+          # Self-healing check: if tools/cooja is missing or empty, clone it automatically
+          if [ ! -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
+            echo "tools/cooja missing from repo checkout, cloning Cooja..."
+            rm -rf /home/user/contiki-ng/tools/cooja
+            git clone --depth 1 --recursive https://github.com/contiki-ng/cooja.git /home/user/contiki-ng/tools/cooja
+          fi
+
           ls -la /home/user/contiki-ng/tools/cooja
 
           python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=${{ matrix.scheme }}, n_nodes=${{ matrix.nodes }}, area=200, n_ch=16, sf_len=${{ matrix.sf_len }}, eb_mult=${{ matrix.eb_mult }}, use_z1=False)"
