@@ -18,6 +18,7 @@ static struct tsch_slotframe *sf_min;
 static uint8_t join_logged = 0;
 static uint16_t parent_switches = 0;
 
+#if SYNC_SCHEME == 1
 /* Fast inline exponential approximation for exp(x) where x <= 0 */
 static double
 define_exp(double x)
@@ -32,6 +33,7 @@ define_exp(double x)
   double xx = x;
   return 1.0 + xx + (xx * xx) / 2.0 + (xx * xx * xx) / 6.0 + (xx * xx * xx * xx) / 24.0;
 }
+#endif
 
 /* Callback declared by TSCH_CALLBACK_NEW_TIME_SOURCE in project-conf.h */
 void
