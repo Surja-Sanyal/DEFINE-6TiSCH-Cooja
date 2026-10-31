@@ -16,13 +16,14 @@ jobs:
         eb_mult: [1, 2, 4]                 # 3 EB interval variations
 
     steps:
-      - name: Checkout repository & submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Run Cooja Headless Simulation
         run: |
-          apt-get update && apt-get install -y python3-pip
-          pip3 install numpy matplotlib
+          mkdir -p /home/user
+          ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
+          ls -la /home/user/contiki-ng/tools/cooja
 
           python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=${{ matrix.scheme }}, n_nodes=${{ matrix.nodes }}, area=200, n_ch=16, sf_len=${{ matrix.sf_len }}, eb_mult=${{ matrix.eb_mult }}, use_z1=False)"
 
