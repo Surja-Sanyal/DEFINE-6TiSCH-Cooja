@@ -187,6 +187,8 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
     coords = load_realdata_coords(n_nodes, area)
     csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}.csc")
     generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, use_z1=use_z1)
+    import shutil
+    shutil.rmtree(os.path.join(EXP_DIR, "build"), ignore_errors=True)
 
     env = os.environ.copy()
     java17_path = "/usr/lib/jvm/java-17-openjdk-amd64"

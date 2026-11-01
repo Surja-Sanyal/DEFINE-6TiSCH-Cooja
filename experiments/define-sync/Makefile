@@ -1,26 +1,34 @@
 CONTIKI_PROJECT = node
 all: $(CONTIKI_PROJECT)
 
-# Point to your contiki-ng-define folder in the workspace root
 CONTIKI = ../../contiki-ng-define
 
 MAKE_MAC = MAKE_MAC_TSCH
+MAKE_NET = MAKE_NET_IPV6
 MAKE_ROUTING = MAKE_ROUTING_RPL_LITE
 
-# Default parameters (can be overridden on the command line without wiping out CFLAGS)
-SYNC_SCHEME ?= 1
-SF_LENGTH ?= 101
-NUM_CHANNELS ?= 16
-EB_MULT ?= 1
-ATP_SUBSLOTS ?= 2
-
+ifdef SYNC_SCHEME
 CFLAGS += -DSYNC_SCHEME=$(SYNC_SCHEME)
-CFLAGS += -DSF_LENGTH=$(SF_LENGTH)
-CFLAGS += -DNUM_CHANNELS=$(NUM_CHANNELS)
-CFLAGS += -DEB_MULT=$(EB_MULT)
-CFLAGS += -DATP_SUBSLOTS=$(ATP_SUBSLOTS)
+endif
 
-# Link math library for exp() and sqrt()
-TARGET_LIBFILES += -lm
+ifdef SF_LENGTH
+CFLAGS += -DSF_LENGTH=$(SF_LENGTH)
+endif
+
+ifdef NUM_CHANNELS
+CFLAGS += -DNUM_CHANNELS=$(NUM_CHANNELS)
+endif
+
+ifdef EB_MULT
+CFLAGS += -DEB_MULT=$(EB_MULT)
+endif
+
+ifdef ATP_SUBSLOTS
+CFLAGS += -DATP_SUBSLOTS=$(ATP_SUBSLOTS)
+else
+CFLAGS += -DATP_SUBSLOTS=2
+endif
+
+CFLAGS += -fno-stack-protector
 
 include $(CONTIKI)/Makefile.include

@@ -17,21 +17,22 @@ static struct ctimer sf_timer;
 static struct tsch_slotframe *sf_min;
 static uint8_t join_logged = 0;
 static uint16_t parent_switches = 0;
+static uint16_t last_ch_offset = 0xFFFF;
 
 #if SYNC_SCHEME == 1
-/* Fast inline exponential approximation for exp(x) where x <= 0 */
+/* Stable rational approximation for exp(x) where x <= 0: 1 / exp(|x|) */
 static double
 define_exp(double x)
 {
+  if(x >= 0.0) {
+    return 1.0;
+  }
   if(x < -10.0) {
     return 0.000045;
   }
-  if(x > 0.0) {
-    return 1.0;
-  }
-  /* Taylor series expansion: 1 + x + x^2/2 + x^3/6 + x^4/24 */
-  double xx = x;
-  return 1.0 + xx + (xx * xx) / 2.0 + (xx * xx * xx) / 6.0 + (xx * xx * xx * xx) / 24.0;
+  double ax = -x;
+  double denom = 1.0 + ax + (ax * ax) / 2.0 + (ax * ax * ax) / 6.0 + (ax * ax * ax * ax) / 24.0;
+  return 1.0 / denom;
 }
 #endif
 
@@ -47,14 +48,36 @@ define_on_new_time_source(const struct tsch_neighbor *old, const struct tsch_nei
 }
 
 static void
+update_advertising_link(uint16_t ch_offset)
+{
+  if(sf_min != NULL && ch_offset != last_ch_offset && !tsch_is_locked()) {
+    if(tsch_schedule_add_link(sf_min,
+         LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
+         LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, ch_offset, 1) != NULL) {
+      last_ch_offset = ch_offset;
+    }
+  }
+}
+
+static void
+safe_set_eb_period(clock_time_t period)
+{
+  clock_time_t min_period = (CLOCK_SECOND / 10 > 4) ? (CLOCK_SECOND / 10) : 4;
+  if(period < min_period) {
+    period = min_period;
+  }
+  tsch_set_eb_period(period);
+}
+
+static void
 slotframe_callback(void *ptr)
 {
   if(tsch_is_associated && sf_min != NULL) {
     uint32_t sf_num = (uint32_t)(tsch_current_asn.ls4b / SF_LENGTH);
     int nbrs = uip_ds6_nbr_num();
     clock_time_t base_sf_dur = (clock_time_t)(EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100));
-    if(base_sf_dur == 0) {
-      base_sf_dur = 1;
+    if(base_sf_dur < 4) {
+      base_sf_dur = 4;
     }
 
     (void)sf_num;
@@ -64,9 +87,7 @@ slotframe_callback(void *ptr)
 #if SYNC_SCHEME == 1 /* 1: DEFINE (ASSIGN + ADAPT) */
     uint16_t rank_inc = (curr_instance.min_hoprankinc > 0) ? curr_instance.min_hoprankinc : 128;
     uint16_t h = curr_instance.used ? (uint16_t)(curr_instance.dag.rank / rank_inc) : 0;
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, h % NUM_CHANNELS, 1);
+    update_advertising_link(h % NUM_CHANNELS);
 
     /* Fast LUT for 100 * sqrt(1 + nbrs) to avoid soft-float sqrt() overhead */
     static const uint16_t sqrt_lut[9] = {100, 141, 173, 200, 224, 245, 265, 283, 300};
@@ -78,65 +99,51 @@ slotframe_callback(void *ptr)
     if(p_eb < 0.01) {
       p_eb = 0.01;
     }
-    clock_time_t period = (clock_time_t)((double)base_sf_dur / p_eb);
-    if(period == 0) {
-      period = 1; // Prevent division/modulo by zero inside TSCH timer
+    if(p_eb > 1.0) {
+      p_eb = 1.0;
     }
-    tsch_set_eb_period(period);
+    clock_time_t period = (clock_time_t)((double)base_sf_dur / p_eb);
+    safe_set_eb_period(period);
 
 #elif SYNC_SCHEME == 2 /* 2: 6TiSCH-MC (RFC 8180 Default) */
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, 0, 1);
-    tsch_set_eb_period(base_sf_dur * 10);
+    update_advertising_link(0);
+    safe_set_eb_period(base_sf_dur * 10);
 
 #elif SYNC_SCHEME == 3 /* 3: EDBA-SA (Random Channel Selection in Minimal Cell) */
     uint16_t rand_ch = random_rand() % NUM_CHANNELS;
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, rand_ch, 1);
-    tsch_set_eb_period(base_sf_dur);
+    update_advertising_link(rand_ch);
+    safe_set_eb_period(base_sf_dur);
 
 #elif SYNC_SCHEME == 4 /* 4: ECV-SA (Deterministic Channel Offset by Node ID) */
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, node_id % NUM_CHANNELS, 1);
-    tsch_set_eb_period(base_sf_dur);
+    update_advertising_link(node_id % NUM_CHANNELS);
+    safe_set_eb_period(base_sf_dur);
 
 #elif SYNC_SCHEME == 5 /* 5: ATP (Multi-Subslot Frequency Rotating Advertisement) */
     uint16_t subslot_ch = (sf_num % ATP_SUBSLOTS + 1) % NUM_CHANNELS;
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, subslot_ch, 1);
-    tsch_set_eb_period((base_sf_dur * 10) / ATP_SUBSLOTS);
+    update_advertising_link(subslot_ch);
+    safe_set_eb_period((base_sf_dur * 10) / ATP_SUBSLOTS);
 
 #elif SYNC_SCHEME == 6 /* 6: TRGB (Time-Variant RGB Model - Kalita & Khatua, 2023) */
     uint8_t rgb_phase = (uint8_t)(sf_num % 3);
     uint8_t sub_band = (NUM_CHANNELS >= 3) ? (NUM_CHANNELS / 3) : 1;
     uint16_t trgb_ch = (rgb_phase * sub_band + (node_id % sub_band)) % NUM_CHANNELS;
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, trgb_ch, 1);
+    update_advertising_link(trgb_ch);
     double p_trgb = (rgb_phase == 0) ? 0.80 : ((rgb_phase == 1) ? 0.40 : 0.10);
-    tsch_set_eb_period((clock_time_t)((double)base_sf_dur / p_trgb));
+    safe_set_eb_period((clock_time_t)((double)base_sf_dur / p_trgb));
 
 #elif SYNC_SCHEME == 7 /* 7: CSMJ (Comprehensive 6TiSCH Sync Model - Chang et al., 2026) */
     uint8_t csmj_be = (nbrs > 8) ? 4 : ((nbrs > 4) ? 3 : ((nbrs > 2) ? 2 : 1));
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, 0, 1);
-    tsch_set_eb_period(base_sf_dur * (1 << csmj_be));
+    update_advertising_link(0);
+    safe_set_eb_period(base_sf_dur * (1 << csmj_be));
 
 #elif SYNC_SCHEME == 8 /* 8: EASE (Autonomous Energy-Aware Cell Scheduling - Kalita, 2026) */
     uint16_t ease_ch = (uint16_t)(((uint32_t)node_id * 2654435761UL) % NUM_CHANNELS);
-    tsch_schedule_add_link(sf_min,
-      LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-      LINK_TYPE_ADVERTISING, &tsch_broadcast_address, 0, ease_ch, 1);
+    update_advertising_link(ease_ch);
     double p_ease = 0.10 / (1.0 + 0.5 * (double)nbrs);
     if(p_ease < 0.02) {
       p_ease = 0.02;
     }
-    tsch_set_eb_period((clock_time_t)((double)base_sf_dur / p_ease));
+    safe_set_eb_period((clock_time_t)((double)base_sf_dur / p_ease));
 #endif
   }
   ctimer_reset(&sf_timer);
