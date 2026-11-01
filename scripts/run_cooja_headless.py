@@ -53,7 +53,7 @@ def load_realdata_coords(n_nodes, area=100, seed=2):
         vals = list(range(1, 10000))
 
     coords = [(area // 2, area // 2)]  # Node 1: PAN Coordinator at center
-    for _ in range(n_nodes):
+    for _ in range(n_nodes - 1):
         x = int(random.choice(vals) % area)
         y = int(random.choice(vals) % area)
         coords.append((x, y))
