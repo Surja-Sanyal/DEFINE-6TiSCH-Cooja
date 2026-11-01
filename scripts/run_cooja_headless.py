@@ -151,7 +151,7 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
     org.contikios.cooja.plugins.ScriptRunner
     <plugin_config>
       <script>
-        TIMEOUT({timeout_ms});
+        TIMEOUT({timeout_ms}, log.testOK());
         var joined = 0;
         var target = {len(coords) - 1};
         while (joined &lt; target) {{
