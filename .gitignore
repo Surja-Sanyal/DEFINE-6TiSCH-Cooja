@@ -1,0 +1,7 @@
+
+# Cooja & Contiki-NG build artifacts
+experiments/define-sync/build/
+experiments/define-sync/*.cooja
+contiki-ng-define/tools/cooja/COOJA.testlog
+contiki-ng-define/tools/cooja/hs_err_*.log
+contiki-ng-define/tools/cooja/core.*
