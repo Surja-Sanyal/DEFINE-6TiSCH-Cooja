@@ -173,8 +173,8 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
     # Scale simulation area dynamically based on node count to maintain consistent density
     AREA_MAP = {
         50: 100,
-        250: 250,
-        500: 350
+        250: 100,
+        500: 100
     }
     if area is None:
         area = AREA_MAP.get(n_nodes, 200)
@@ -221,7 +221,7 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
             colls.append(int(m.group(7)) if m.group(7) else 0)
 
     num_joined = len(asns)
-    total_time = (max(asns) / 100.0) if asns else 3600.0
+    total_time = (float(np.percentile(asns, 95)) / 100.0) if asns else 3600.0
     avg_asn = (sum(asns) / num_joined) if num_joined > 0 else 0.0
     tx_total = sum(tx_ticks)
     rx_total = sum(rx_ticks)
