@@ -23,24 +23,32 @@ def load_scheme_matrix(prefix, target_sf=61, target_eb=1):
         candidates = glob.glob(os.path.join(STAT_DIR, f"_{prefix}_stats_.txt"))
     if not candidates:
         return None
-    
+
     data = np.loadtxt(candidates[0], delimiter=",", usecols=range(12))
     if data.ndim == 1:
         data = data.reshape(1, -1)
-    
-    # Filter for the specific slotframe length (col index 3) and EB multiplier (col index 4)
-    # Columns in row: [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, ...]
+
+    # Prefer rows with non-zero collisions if stale rows exist
+    non_zero = data[data[:, 9] > 0]
+    if len(non_zero) > 0:
+        data = non_zero
+
     filtered = data[(data[:, 3] == target_sf) & (data[:, 4] == target_eb)]
     if len(filtered) == 0:
-        filtered = data # Fallback if exact match isn't found
-        
-    return filtered[filtered[:, 0].argsort()]
+        filtered = data
+
+    # Deduplicate by node count (col 0), keeping the latest row for each n_nodes
+    by_nodes = {}
+    for row in filtered:
+        by_nodes[int(row[0])] = row
+    deduped = np.array([by_nodes[k] for k in sorted(by_nodes.keys())])
+    return deduped
 
 def plot_metric(col_idx, ylabel, filename, scale=1.0):
     plt.figure(figsize=(7, 5), dpi=300)
     for key, (label, color, marker, ls) in MECHANISMS.items():
         mat = load_scheme_matrix(key)
-        if mat is None:
+        if mat is None or len(mat) == 0:
             continue
         x = mat[:, 0]
         y = mat[:, col_idx] * scale

@@ -1,6 +1,9 @@
 #ifndef PROJECT_CONF_H_
 #define PROJECT_CONF_H_
 
+/* Increase Cooja mote coroutine stack size to prevent stack overflow */
+#define COOJA_MTARCH_STACKSIZE 16384
+
 /* Enable TSCH and RPL-Lite */
 #define MAKE_MAC MAKE_MAC_TSCH
 #define MAKE_ROUTING MAKE_ROUTING_RPL_LITE
@@ -32,7 +35,26 @@
 
 /* Custom hooks into Contiki-NG TSCH */
 #define TSCH_CALLBACK_NEW_TIME_SOURCE define_on_new_time_source
+
+#if SYNC_SCHEME == 1      /* DEFINE: Fast adaptive coordinator/relay EB broadcast */
 #define TSCH_CONF_EB_PERIOD (EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 2    /* 6TiSCH-MC: Single shared minimal cell contention */
+#define TSCH_CONF_EB_PERIOD (5 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 3    /* EDBA-SA */
+#define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 4    /* ECV-SA */
+#define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 5    /* ATP */
+#define TSCH_CONF_EB_PERIOD (4 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 6    /* TRGB */
+#define TSCH_CONF_EB_PERIOD (2 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 7    /* CSMJ */
+#define TSCH_CONF_EB_PERIOD (4 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#else                     /* EASE */
+#define TSCH_CONF_EB_PERIOD (2 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#endif
+
+#define TSCH_CONF_MAX_EB_PERIOD (16 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 
 /* Ensure Enhanced Beacons advertise the custom slotframe schedule */
 #define TSCH_PACKET_CONF_EB_WITH_SLOTFRAME_AND_LINK 1
@@ -51,9 +73,9 @@
 /* Optimal pledge channel scan duration: SF_LENGTH * 10 ms per channel */
 #define TSCH_CONF_CHANNEL_SCAN_DURATION (SF_LENGTH * (CLOCK_SECOND / 100))
 
-/* Z1 Mote RAM Optimization to prevent stack overflow at $00e2e */
-#define NBR_TABLE_CONF_MAX_NEIGHBORS 8
-#define NETSTACK_MAX_ROUTE_ENTRIES 8
+/* Z1 Mote RAM Optimization */
+#define NBR_TABLE_CONF_MAX_NEIGHBORS 16
+#define NETSTACK_MAX_ROUTE_ENTRIES 16
 #define UIP_CONF_BUFFER_SIZE 240
 #define UIP_CONF_UDP 1
 #define UIP_CONF_TCP 0

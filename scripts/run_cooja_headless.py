@@ -19,12 +19,7 @@ REALDATA_PATH = os.path.join(ROOT_DIR, "Realdata", "_realdata_.txt")
 
 import glob
 
-# Automatically clear old stats at the start of a run to prevent data mixing
-for old_file in glob.glob(os.path.join(STAT_DIR, "*stats*.txt")) + glob.glob(os.path.join(STAT_DIR, "*.csv")):
-    try:
-        os.remove(old_file)
-    except OSError as e:
-        print(f"Error cleaning old file {old_file}: {e}")
+# Note: Stats cleanup is done by caller or __main__
 
 
 # Locate Contiki-NG Cooja directory (local submodule or Docker container path)
@@ -214,8 +209,8 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
         with open(testlog_path, "r") as f:
             log_lines = f.readlines()
 
-    pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)")
-    asns, tx_ticks, rx_ticks = [], [], []
+    pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)(?:,coll=(\d+))?")
+    asns, tx_ticks, rx_ticks, colls = [], [], [], []
 
     for line in log_lines:
         m = pattern.search(line)
@@ -223,17 +218,19 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
             asns.append(int(m.group(2)))
             tx_ticks.append(int(m.group(5)))
             rx_ticks.append(int(m.group(6)))
+            colls.append(int(m.group(7)) if m.group(7) else 0)
 
     num_joined = len(asns)
     total_time = (max(asns) / 100.0) if asns else 3600.0
     avg_asn = (sum(asns) / num_joined) if num_joined > 0 else 0.0
     tx_total = sum(tx_ticks)
     rx_total = sum(rx_ticks)
+    coll_total = sum(colls)
 
     stat_key = SCHEME_MAP[scheme_id]
     stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
     with open(stat_file, "a") as fp:
-        row = [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, avg_asn, avg_asn, 0, tx_total, rx_total]
+        row = [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, avg_asn, avg_asn, coll_total, tx_total, rx_total]
         fp.write(",".join(map(str, row)) + ",\n")
 
     mode_str = "Z1" if (USE_Z1 if use_z1 is None else use_z1) else "COOJA-NATIVE"

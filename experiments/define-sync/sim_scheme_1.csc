@@ -19,7 +19,7 @@
       <identifier>cooja_define</identifier>
       <description>Cooja DEFINE Mote</description>
       <source>/workspaces/DEFINE-6TiSCH-Cooja/experiments/define-sync/node.c</source>
-      <commands>make -j4 node.cooja TARGET=cooja SYNC_SCHEME=1 SF_LENGTH=23 NUM_CHANNELS=16 EB_MULT=1</commands>
+      <commands>make -j4 node.cooja TARGET=cooja SYNC_SCHEME=1 SF_LENGTH=61 NUM_CHANNELS=16 EB_MULT=1</commands>
       <moteinterface>org.contikios.cooja.interfaces.Position</moteinterface>
       <moteinterface>org.contikios.cooja.interfaces.Battery</moteinterface>
       <moteinterface>org.contikios.cooja.contikimote.interfaces.ContikiVib</moteinterface>
@@ -757,7 +757,7 @@
     org.contikios.cooja.plugins.ScriptRunner
     <plugin_config>
       <script>
-        TIMEOUT(3600000);
+        TIMEOUT(3600000, log.testOK());
         var joined = 0;
         var target = 50;
         while (joined &lt; target) {

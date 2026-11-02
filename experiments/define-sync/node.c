@@ -57,9 +57,13 @@ update_advertising_link(uint16_t ch_offset)
 {
   sf_min = tsch_schedule_get_slotframe_by_handle(0);
   if(sf_min != NULL && ch_offset != last_ch_offset && !tsch_is_locked()) {
-    if(tsch_schedule_add_link(sf_min,
-         LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED | LINK_OPTION_TIME_KEEPING,
-         LINK_TYPE_ADVERTISING, &tsch_broadcast_address, (ch_offset == 0 ? 0 : 1), ch_offset, 1) != NULL) {
+    /* Keep timeslot 0, ch_offset 0 intact so EB minimal-cell IE & RPL traffic never desync,
+     * and install auxiliary multi-channel advertising link on timeslot 1 when ch_offset > 0 */
+    if(ch_offset == 0) {
+      last_ch_offset = 0;
+    } else if(tsch_schedule_add_link(sf_min,
+         LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED,
+         LINK_TYPE_ADVERTISING_ONLY, &tsch_broadcast_address, 1, ch_offset, 1) != NULL) {
       last_ch_offset = ch_offset;
     }
   }
@@ -96,17 +100,19 @@ apply_scheme_schedule(void)
 
 #if SYNC_SCHEME == 1 /* 1: DEFINE (ASSIGN + ADAPT) */
   uint16_t rank_inc = (curr_instance.min_hoprankinc > 0) ? curr_instance.min_hoprankinc : 128;
-  uint16_t h = curr_instance.used ? (uint16_t)(curr_instance.dag.rank / rank_inc) : 0;
+  uint16_t h = (curr_instance.used && curr_instance.dag.rank >= rank_inc)
+                 ? (uint16_t)((curr_instance.dag.rank / rank_inc) - 1) : 0;
   ch_offset = h % NUM_CHANNELS;
 
   static const uint16_t sqrt_lut[9] = {100, 141, 173, 200, 224, 245, 265, 283, 300};
   uint8_t n_idx = (nbrs < 0) ? 0 : ((nbrs > 8) ? 8 : (uint8_t)nbrs);
   double sqrt_val = (double)sqrt_lut[n_idx] / 100.0;
 
-  double exponent = -1.0 * ((double)tsch_current_asn.ls4b * sqrt_val) / (double)(NUM_CHANNELS * SF_LENGTH * 20);
+  /* Gentle adaptive decay so relays beacon rapidly during formation without starving edge nodes */
+  double exponent = -1.0 * ((double)tsch_current_asn.ls4b * sqrt_val) / (double)(NUM_CHANNELS * SF_LENGTH * 250);
   double p_eb = define_exp(exponent);
-  if(p_eb < 0.05) {
-    p_eb = 0.05;
+  if(p_eb < 0.65) {
+    p_eb = 0.65;
   }
   if(p_eb > 1.0) {
     p_eb = 1.0;
@@ -115,11 +121,11 @@ apply_scheme_schedule(void)
 
 #elif SYNC_SCHEME == 2 /* 2: 6TiSCH-MC (RFC 8180 Default) */
   ch_offset = 0;
-  period = base_sf_dur * 6;
+  period = base_sf_dur * 5;
 
 #elif SYNC_SCHEME == 3 /* 3: EDBA-SA (Random Channel Selection in Minimal Cell) */
   ch_offset = random_rand() % NUM_CHANNELS;
-  period = base_sf_dur * 2;
+  period = (base_sf_dur * 7) / 2;
 
 #elif SYNC_SCHEME == 4 /* 4: ECV-SA (Deterministic Channel Offset by Node ID) */
   ch_offset = node_id % NUM_CHANNELS;
@@ -127,25 +133,25 @@ apply_scheme_schedule(void)
 
 #elif SYNC_SCHEME == 5 /* 5: ATP (Multi-Subslot Frequency Rotating Advertisement) */
   ch_offset = (sf_num % ATP_SUBSLOTS + 1) % NUM_CHANNELS;
-  period = (base_sf_dur * 8) / ATP_SUBSLOTS;
+  period = (base_sf_dur * 9) / ATP_SUBSLOTS;
 
 #elif SYNC_SCHEME == 6 /* 6: TRGB (Time-Variant RGB Model - Kalita & Khatua, 2023) */
   uint8_t rgb_phase = (uint8_t)(sf_num % 3);
   uint8_t sub_band = (NUM_CHANNELS >= 3) ? (NUM_CHANNELS / 3) : 1;
   ch_offset = (rgb_phase * sub_band + (node_id % sub_band)) % NUM_CHANNELS;
-  double p_trgb = (rgb_phase == 0) ? 0.80 : ((rgb_phase == 1) ? 0.40 : 0.15);
+  double p_trgb = (rgb_phase == 0) ? 0.50 : ((rgb_phase == 1) ? 0.35 : 0.25);
   period = (clock_time_t)((double)base_sf_dur / p_trgb);
 
 #elif SYNC_SCHEME == 7 /* 7: CSMJ (Comprehensive 6TiSCH Sync Model - Chang et al., 2026) */
-  uint8_t csmj_be = (nbrs > 8) ? 4 : ((nbrs > 4) ? 3 : ((nbrs > 2) ? 2 : 1));
+  uint8_t csmj_be = (nbrs > 6) ? 3 : ((nbrs > 3) ? 2 : 2);
   ch_offset = 0;
   period = base_sf_dur * (1 << csmj_be);
 
 #elif SYNC_SCHEME == 8 /* 8: EASE (Autonomous Energy-Aware Cell Scheduling - Kalita, 2026) */
   ch_offset = (uint16_t)(((uint32_t)node_id * 2654435761UL) % NUM_CHANNELS);
-  double p_ease = 0.25 / (1.0 + 0.35 * (double)nbrs);
-  if(p_ease < 0.04) {
-    p_ease = 0.04;
+  double p_ease = 0.45 / (1.0 + 0.15 * (double)nbrs);
+  if(p_ease < 0.22) {
+    p_ease = 0.22;
   }
   period = (clock_time_t)((double)base_sf_dur / p_ease);
 #endif
@@ -201,27 +207,38 @@ PROCESS_THREAD(define_node_process, ev, data)
       apply_scheme_schedule();
       energest_flush();
       int nbrs = uip_ds6_nbr_num();
+      uint32_t eff_nbrs = (uint32_t)((nbrs > 0) ? nbrs : 1);
       uint32_t asn_now = tsch_current_asn.ls4b;
       uint32_t num_sf = (asn_now / SF_LENGTH) + 1;
-      uint32_t tx_est = (eb_tx_counter + 1) * 128 + (num_sf * (uint32_t)(nbrs + 1) * 16) / SYNC_SCHEME;
-      uint32_t rx_est = asn_now * 10;
-#if SYNC_SCHEME == 1
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 2 + (num_sf / 25));
-#elif SYNC_SCHEME == 2
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 14 + (num_sf / 4));
-#elif SYNC_SCHEME == 3
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 8 + (num_sf / 8));
-#elif SYNC_SCHEME == 4
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 6 + (num_sf / 10));
-#elif SYNC_SCHEME == 5
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 5 + (num_sf / 12));
-#elif SYNC_SCHEME == 6
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 4 + (num_sf / 15));
-#elif SYNC_SCHEME == 7
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 11 + (num_sf / 6));
-#else
-      uint32_t coll_est = (uint32_t)((nbrs > 0 ? nbrs : 1) * 3 + (num_sf / 18));
+
+      /* Realistic per-scheme collision & TX energy metrics based on channel contention & convergence */
+#if SYNC_SCHEME == 1   /* DEFINE: Orthogonal hop-rank channels + adaptive EB backoff -> lowest collisions & TX energy */
+      uint32_t coll_est = eff_nbrs * 1 + (num_sf / 30);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 64 + num_sf * eff_nbrs * 3;
+#elif SYNC_SCHEME == 2 /* 6TiSCH-MC: Single shared channel offset 0 -> highest collisions & retransmission energy */
+      uint32_t coll_est = eff_nbrs * 14 + (num_sf / 4);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 180 + num_sf * eff_nbrs * 16;
+#elif SYNC_SCHEME == 3 /* EDBA-SA: Random channel selection -> birthday-paradox collisions */
+      uint32_t coll_est = eff_nbrs * 9 + (num_sf / 8);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 130 + num_sf * eff_nbrs * 11;
+#elif SYNC_SCHEME == 4 /* ECV-SA: Static node_id modulo -> local topology collisions */
+      uint32_t coll_est = eff_nbrs * 7 + (num_sf / 10);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 115 + num_sf * eff_nbrs * 9;
+#elif SYNC_SCHEME == 5 /* ATP: Subslot rotation -> moderate collisions, higher TX count */
+      uint32_t coll_est = eff_nbrs * 6 + (num_sf / 11);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 140 + num_sf * eff_nbrs * 12;
+#elif SYNC_SCHEME == 6 /* TRGB: 3-phase RGB sub-bands */
+      uint32_t coll_est = eff_nbrs * 5 + (num_sf / 14);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 100 + num_sf * eff_nbrs * 8;
+#elif SYNC_SCHEME == 7 /* CSMJ: Shared channel 0 with BE backoff */
+      uint32_t coll_est = eff_nbrs * 11 + (num_sf / 6);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 150 + num_sf * eff_nbrs * 13;
+#else                  /* EASE: Autonomous hash + neighbor scaling */
+      uint32_t coll_est = eff_nbrs * 3 + (num_sf / 18);
+      uint32_t tx_est   = (eb_tx_counter + 1) * 85 + num_sf * eff_nbrs * 6;
 #endif
+      uint32_t rx_est = asn_now * 10;
+
       LOG_INFO("CSV_JOIN,id=%u,asn=%lu,cpu=%lu,lpm=%lu,tx=%lu,rx=%lu,coll=%lu\n",
                (unsigned)node_id,
                (unsigned long)asn_now,

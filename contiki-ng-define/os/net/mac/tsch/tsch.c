@@ -916,7 +916,7 @@ PROCESS_THREAD(tsch_send_eb_process, ev, data)
 
   /* Set an initial delay except for coordinator, which should send an EB asap */
   if(!tsch_is_coordinator) {
-    etimer_set(&eb_timer, TSCH_EB_PERIOD ? random_rand() % TSCH_EB_PERIOD : 0);
+    etimer_set(&eb_timer, tsch_current_eb_period > 0 ? random_rand() % tsch_current_eb_period : 0);
     PROCESS_WAIT_UNTIL(etimer_expired(&eb_timer));
   }
 

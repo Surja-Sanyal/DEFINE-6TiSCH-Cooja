@@ -115,11 +115,11 @@ tsch_rpl_callback_new_dio_interval(clock_time_t dio_interval)
       tsch_set_coordinator(1);
     }
     /* Set EB period */
-    tsch_set_eb_period(dio_interval);
+    // tsch_set_eb_period(dio_interval);
     /* Set join priority based on RPL rank */
     tsch_set_join_priority(dag_rank - 1);
   } else {
-    tsch_set_eb_period(TSCH_EB_PERIOD);
+    // tsch_set_eb_period(TSCH_EB_PERIOD);
   }
 }
 /*---------------------------------------------------------------------------*/
