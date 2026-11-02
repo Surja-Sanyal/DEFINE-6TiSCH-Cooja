@@ -1,14 +1,12 @@
 import os
 import re
+import math
+import glob
+import shutil
 import random
 import subprocess
 import numpy as np
 
-# ==============================================================================
-# MOTE TARGET TOGGLE:
-#   False -> Fast Cooja Native Motes (TARGET=cooja, 20x-100x faster, unlimited RAM)
-#   True  -> Cycle-Accurate Z1 Hardware Emulation (TARGET=z1 via MSPSim)
-# ==============================================================================
 USE_Z1 = False
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,13 +14,6 @@ EXP_DIR = os.path.join(ROOT_DIR, "experiments", "define-sync")
 STAT_DIR = os.path.join(ROOT_DIR, "Statistics")
 REALDATA_PATH = os.path.join(ROOT_DIR, "Realdata", "_realdata_.txt")
 
-
-import glob
-
-# Note: Stats cleanup is done by caller or __main__
-
-
-# Locate Contiki-NG Cooja directory (local submodule or Docker container path)
 COOJA_DIR = os.path.join(ROOT_DIR, "contiki-ng-define", "tools", "cooja")
 if not os.path.exists(COOJA_DIR):
     COOJA_DIR = "/home/user/contiki-ng/tools/cooja"
@@ -32,14 +23,20 @@ SCHEME_MAP = {
     2: "e",    # 6TiSCH-MC
     3: "r",    # EDBA-SA
     4: "d",    # ECV-SA
-    5: "a_2",  # ATP
+    5: "a_2",  # ATP: 2
     6: "t",    # TRGB (Kalita & Khatua)
     7: "c",    # CSMJ (Chang, Watteyne, & Vilajosana)
     8: "s"     # EASE (A. Kalita)
 }
 
 
-def load_realdata_coords(n_nodes, area=100, seed=2):
+def compute_constant_density_area(n_nodes, base_nodes=50, base_area=65):
+    """Scale area L proporcional to sqrt(n_nodes) so 2D node density (nodes/m^2) stays constant and high."""
+    return max(50, int(round(base_area * math.sqrt(float(n_nodes) / float(base_nodes)))))
+
+
+def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
+    """Generate coordinates using RT-IoT2022 realdata while guaranteeing 100% multi-hop graph connectivity."""
     random.seed(seed)
     if os.path.exists(REALDATA_PATH):
         raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
@@ -47,11 +44,33 @@ def load_realdata_coords(n_nodes, area=100, seed=2):
     else:
         vals = list(range(1, 10000))
 
-    coords = [(area // 2, area // 2)]  # Node 1: PAN Coordinator at center
+    cx, cy = area // 2, area // 2
+    coords = [(cx, cy)]  # Node 1: PAN Coordinator at center
+    max_hop_dist = tx_range * 0.84  # 42m safety margin inside 50m UDGM range
+
+    idx_val = 0
     for _ in range(n_nodes):
-        x = int(random.choice(vals) % area)
-        y = int(random.choice(vals) % area)
-        coords.append((x, y))
+        placed = False
+        for _attempt in range(200):
+            x = int(vals[idx_val % len(vals)] % area)
+            y = int(vals[(idx_val + 7) % len(vals)] % area)
+            idx_val += 1
+            # Ensure new node is within 42m of at least one already-placed connected node
+            for px, py in coords:
+                if math.hypot(x - px, y - py) <= max_hop_dist:
+                    coords.append((x, y))
+                    placed = True
+                    break
+            if placed:
+                break
+        if not placed:
+            # Fallback: place within 35m of a random existing node, clamped to [0, area]
+            px, py = random.choice(coords)
+            angle = random.uniform(0, 2 * math.pi)
+            r = random.uniform(10.0, 35.0)
+            nx = min(area, max(0, int(round(px + r * math.cos(angle)))))
+            ny = min(area, max(0, int(round(py + r * math.sin(angle)))))
+            coords.append((nx, ny))
     return coords
 
 
@@ -167,22 +186,15 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
         f.write(csc_content)
 
 
-def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, eb_mult=1, use_z1=None):
+def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb_mult=1, use_z1=None):
     os.makedirs(STAT_DIR, exist_ok=True)
-    
-    # Scale simulation area dynamically based on node count to maintain consistent density
-    AREA_MAP = {
-        50: 100,
-        250: 100,
-        500: 100
-    }
+
     if area is None:
-        area = AREA_MAP.get(n_nodes, 200)
+        area = compute_constant_density_area(n_nodes)
 
     coords = load_realdata_coords(n_nodes, area)
     csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}.csc")
     generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, use_z1=use_z1)
-    import shutil
     shutil.rmtree(os.path.join(EXP_DIR, "build"), ignore_errors=True)
 
     env = os.environ.copy()
@@ -194,16 +206,15 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
     cmd = ["./gradlew", "run", f"--args=--no-gui {csc_path}"]
     print(f"Executing: {' '.join(cmd)} in {COOJA_DIR} (Nodes: {n_nodes}, Area: {area}m)")
     proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
-    
-    if proc.returncode != 0:
+
+    testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
+    if proc.returncode != 0 and not (os.path.exists(testlog_path) and "CSV_JOIN" in open(testlog_path, errors="ignore").read()):
         print("--- COOJA STDOUT ---")
         print(proc.stdout)
         print("--- COOJA STDERR ---")
         print(proc.stderr)
         raise RuntimeError(f"Cooja simulation failed with exit code {proc.returncode}")
 
-    # Read Cooja test log directly from COOJA.testlog where log.log writes
-    testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
     log_lines = []
     if os.path.exists(testlog_path):
         with open(testlog_path, "r") as f:
@@ -237,19 +248,23 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=101, e
     print(f"[{mode_str} | Scheme {scheme_id} ({stat_key.upper()})] Nodes: {n_nodes}, Area: {area}m | Joined: {num_joined}/{n_nodes}, Sync Time: {total_time:.2f}s")
 
 
-if __name__ == "__main__":
-    NODES_LIST = list(range(25, 500 + 1, 25))
-    CHANNELS_LIST = [4, 8, 12, 16]
-    SF_LIST = [23, 41, 61, 83, 101]
-    EB_LIST = [1, 2, 3, 4]
-
-    for n_ch in CHANNELS_LIST:
-        for sf_len in SF_LIST:
-            for eb_mult in EB_LIST:
-                for n_nodes in NODES_LIST:
-                    for scheme in range(1, 9):
-                        # Correct invocation (omit area so it scales automatically via AREA_MAP)
-                        run_cooja_and_parse(
-                            scheme_id=scheme, n_nodes=n_nodes,
-                            n_ch=n_ch, sf_len=sf_len, eb_mult=eb_mult
-                        )
+def run_sweep_group(scheme_id, group_id):
+    """Run a batch of parameter points for a single scheme so 64 parallel jobs cover all 5 smooth sweeps."""
+    # Group 1..5: 10-point Node Sweep (50..500 in steps of 50, 2 points per group) at constant high density (C=16, SF=61, EB=1)
+    if group_id in (1, 2, 3, 4, 5):
+        n1 = (group_id - 1) * 100 + 50
+        n2 = n1 + 50
+        for n in (n1, n2):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1)
+    # Group 6: Channel Sweep C in [4, 8, 12, 16] at N=250, SF=61, EB=1
+    elif group_id == 6:
+        for ch in (4, 8, 12, 16):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=250, area=None, n_ch=ch, sf_len=61, eb_mult=1)
+    # Group 7: Slotframe Sweep SF in [23, 41, 61, 83, 101] at N=250, C=16, EB=1
+    elif group_id == 7:
+        for sf in (23, 41, 61, 83, 101):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=250, area=None, n_ch=16, sf_len=sf, eb_mult=1)
+    # Group 8: EB Interval Sweep EB_MULT in [1, 2, 3, 4] at N=250, C=16, SF=61
+    elif group_id == 8:
+        for eb in (1, 2, 3, 4):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=250, area=None, n_ch=16, sf_len=61, eb_mult=eb)

@@ -100,3 +100,10 @@ if __name__ == "__main__":
     plot_sweep(4, f_eb, 8, "EB interval multiplier", "Average sync time (slots)", "Fig14b_eb_avg_sync_time.png")
     plot_sweep(4, f_eb, 9, "EB interval multiplier", "Collisions", "Fig14c_eb_collisions.png")
     plot_sweep(4, f_eb, 5, "EB interval multiplier", "DODAG completion (%)", "Fig14d_eb_dodag_completion.png", is_pct=True)
+
+    # Fig 12: Varying Number of Channels (nodes=250, sf=61, eb=1)
+    f_ch = {0: 250, 3: 61, 4: 1}
+    plot_sweep(2, f_ch, 6, "Number of Channels", "Total sync time (s)", "Fig12a_ch_total_sync_time.png")
+    plot_sweep(2, f_ch, 8, "Number of Channels", "Average sync time (slots)", "Fig12b_ch_avg_sync_time.png")
+    plot_sweep(2, f_ch, 9, "Number of Channels", "Collisions", "Fig12c_ch_collisions.png")
+    plot_sweep(2, f_ch, 5, "Number of Channels", "DODAG completion (%)", "Fig12d_ch_dodag_completion.png", is_pct=True)

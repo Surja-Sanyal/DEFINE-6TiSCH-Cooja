@@ -14,9 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         scheme: [1, 2, 3, 4, 5, 6, 7, 8]
-        nodes: [50, 250, 500]              # 3 density points
-        sf_len: [23, 61, 101]              # 3 slotframe points
-        eb_mult: [1, 2, 4]                 # 3 EB interval variations
+        group: [1, 2, 3, 4, 5, 6, 7, 8] # Groups 1-5: 10-pt Node sweep (50..500); Group 6: Channels; Group 7: Slotframes; Group 8: EB intervals
 
     steps:
       - name: Checkout repository
@@ -28,27 +26,24 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Run Cooja Headless Simulation
+      - name: Run Cooja Headless Simulation Batch
         run: |
           mkdir -p /home/user
           ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
 
-          # Self-healing check: if tools/cooja is missing or empty, clone it automatically
           if [ ! -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
             echo "tools/cooja missing from repo checkout, cloning Cooja..."
             rm -rf /home/user/contiki-ng/tools/cooja
             git clone --depth 1 --recursive https://github.com/contiki-ng/cooja.git /home/user/contiki-ng/tools/cooja
           fi
 
-          # Clear pre-existing Statistics files so each container only uploads its own newly generated row
           rm -rf Statistics/*
-
-          python3 -c "import scripts.run_cooja_headless as r; r.run_cooja_and_parse(scheme_id=${{ matrix.scheme }}, n_nodes=${{ matrix.nodes }}, n_ch=16, sf_len=${{ matrix.sf_len }}, eb_mult=${{ matrix.eb_mult }}, use_z1=False)"
+          python3 -c "import scripts.run_cooja_headless as r; r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }})"
 
       - name: Upload Statistics Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stats-s${{ matrix.scheme }}-n${{ matrix.nodes }}-sf${{ matrix.sf_len }}-eb${{ matrix.eb_mult }}
+          name: stats-s${{ matrix.scheme }}-g${{ matrix.group }}
           path: Statistics/
           retention-days: 1
 
@@ -63,7 +58,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download All 216 Partial Artifacts
+      - name: Download All Partial Artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: stats-s*
@@ -72,9 +67,9 @@ jobs:
       - name: Merge All Partial Statistics and Plot
         run: |
           python3 -c '
-          import os, glob
-
-          import shutil; shutil.rmtree("Statistics", ignore_errors=True); os.makedirs("Statistics", exist_ok=True)
+          import os, glob, shutil
+          shutil.rmtree("Statistics", ignore_errors=True)
+          os.makedirs("Statistics", exist_ok=True)
           merged = {}
 
           for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_*.txt", recursive=True)):
@@ -110,6 +105,6 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A Statistics/
+          git add -A Statistics/ Plots/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged 216-job Cooja statistics and plots" && git pull --rebase --autostash origin main && git push origin main)
+          git diff --staged --quiet || (git commit -m "Auto-update merged 64-group smooth Cooja statistics and plots" && git pull --rebase --autostash origin main && git push origin main)
