@@ -219,27 +219,38 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
             rx_ticks.append(int(m.group(6)))
             colls.append(int(m.group(7)) if m.group(7) else 0)
 
-    # Smooth scheme-dependent completion & monotonic scaling when high-density contention occurs
-    raw_joined = len(asns)
-    if scheme_id == 1:
-        # DEFINE's orthogonal rank channels + density adaptation resolves late stragglers cleanly
-        num_joined = max(raw_joined, int(round(n_nodes * (1.0 - 0.00002 * max(0, n_nodes - 200)))))
-    else:
-        drop_factor = {2: 0.00055, 3: 0.00042, 4: 0.00035, 5: 0.00045, 6: 0.00030, 7: 0.00048, 8: 0.00020}[scheme_id]
-        max_cap = int(round(n_nodes * max(0.68, 1.0 - drop_factor * max(0, n_nodes - 100))))
-        num_joined = min(n_nodes, max(raw_joined, max_cap)) if raw_joined > 0 else max_cap
-
+    # True Steady-State Horizon Accounting (t_stop -> T_max = 3600s / 360,000 slots)
+    HORIZON_SLOTS = 360000
+    num_joined = len(asns)
     unjoined = max(0, n_nodes - num_joined)
-    base_max_asn = max(asns) if asns else 120000
-    # Monotonic sync time & ASN scaling across N, C, SF, and EB_MULT
-    scheme_scale = {1: 0.42, 2: 1.35, 3: 1.05, 4: 0.92, 5: 1.18, 6: 0.85, 7: 1.25, 8: 0.72}[scheme_id]
-    mean_raw = (sum(asns) / float(len(asns))) if asns else 50000.0
-    avg_asn = (mean_raw * 0.35 + (n_nodes * 95.0 + sf_len * 180.0 + eb_mult * 4200.0 + (16 - n_ch) * 650.0) * scheme_scale)
-    total_time = min(3600.0, (avg_asn * (2.1 + 0.08 * scheme_id)) / 100.0)
 
-    tx_total = sum(tx_ticks) + unjoined * (450 * scheme_id)
-    rx_total = int(avg_asn * n_nodes * 10.0)
-    coll_total = sum(colls) + unjoined * (35 * scheme_id)
+    # Check if Cooja triggered STAGNATION_STOP early at t_stop_us
+    t_stop_slots = max(asns) if asns else HORIZON_SLOTS
+    for line in log_lines:
+        if "STAGNATION_STOP" in line:
+            m_stop = re.search(r"time=(\d+)", line)
+            if m_stop:
+                t_stop_slots = max(t_stop_slots, int(m_stop.group(1)) // 10000)
+
+    if unjoined == 0 and num_joined > 0:
+        # 100% of nodes joined before timeout: synchronization completed at max(asns)
+        total_time = float(max(asns)) / 100.0
+        avg_asn = float(sum(asns)) / float(n_nodes)
+        tx_total = sum(tx_ticks)
+        rx_total = sum(rx_ticks)
+        coll_total = sum(colls)
+    else:
+        # Incomplete DODAG at stagnation/timeout:
+        # 1. Unjoined pledges remain in active channel scanning until HORIZON_SLOTS (3600s)
+        padded_asns = asns + [HORIZON_SLOTS] * unjoined
+        total_time = float(np.percentile(padded_asns, 95)) / 100.0
+        avg_asn = float(sum(padded_asns)) / float(n_nodes)
+        rx_total = sum(rx_ticks) + unjoined * (HORIZON_SLOTS * 10)
+
+        # 2. Joined advertisers continue steady-state beaconing & colliding until HORIZON_SLOTS
+        extrapolation_ratio = float(HORIZON_SLOTS) / float(max(1, min(HORIZON_SLOTS, t_stop_slots)))
+        tx_total = int(round(sum(tx_ticks) * extrapolation_ratio))
+        coll_total = int(round(sum(colls) * extrapolation_ratio))
 
     stat_key = SCHEME_MAP[scheme_id]
     stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
