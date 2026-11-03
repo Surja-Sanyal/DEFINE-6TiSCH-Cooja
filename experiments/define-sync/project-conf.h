@@ -1,20 +1,17 @@
 #ifndef PROJECT_CONF_H_
 #define PROJECT_CONF_H_
 
-/* Increase Cooja mote coroutine stack size to prevent stack overflow */
 #define COOJA_MTARCH_STACKSIZE 16384
 
-/* Enable TSCH and RPL-Lite */
 #define MAKE_MAC MAKE_MAC_TSCH
 #define MAKE_ROUTING MAKE_ROUTING_RPL_LITE
 
-/* Parameterized via Makefile CFLAGS */
 #ifndef SYNC_SCHEME
-#define SYNC_SCHEME 1 /* 1:DEFINE, 2:MC, 3:EDBA, 4:ECV, 5:ATP, 6:TRGB, 7:CSMJ, 8:EASE */
+#define SYNC_SCHEME 1
 #endif
 
 #ifndef SF_LENGTH
-#define SF_LENGTH 101
+#define SF_LENGTH 61
 #endif
 
 #ifndef NUM_CHANNELS
@@ -33,10 +30,9 @@
 #define TSCH_CONF_DEFAULT_TIMESLOT_LENGTH 10000 /* 10 ms */
 #define ENERGEST_CONF_ON 1
 
-/* Custom hooks into Contiki-NG TSCH */
 #define TSCH_CALLBACK_NEW_TIME_SOURCE define_on_new_time_source
 
-#if SYNC_SCHEME == 1      /* DEFINE: Fast adaptive coordinator/relay EB broadcast */
+#if SYNC_SCHEME == 1      /* DEFINE */
 #define TSCH_CONF_EB_PERIOD (EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 2    /* 6TiSCH-MC */
 #define TSCH_CONF_EB_PERIOD (6 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
@@ -55,29 +51,36 @@
 #endif
 
 #define TSCH_CONF_MAX_EB_PERIOD (16 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
-
-/* Ensure Enhanced Beacons advertise the custom slotframe schedule */
 #define TSCH_PACKET_CONF_EB_WITH_SLOTFRAME_AND_LINK 1
 
-/* Channel hopping sequence length adjustment */
-#if NUM_CHANNELS == 4
+/* Support 8-point channel granularity: 2, 4, 6, 8, 10, 12, 14, 16 */
+#if NUM_CHANNELS == 2
+#define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE (uint8_t[]){ 15, 25 }
+#elif NUM_CHANNELS == 4
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE TSCH_HOPPING_SEQUENCE_4_4
+#elif NUM_CHANNELS == 6
+#define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE (uint8_t[]){ 15, 25, 26, 20, 13, 17 }
 #elif NUM_CHANNELS == 8
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE (uint8_t[]){ 15, 25, 26, 20, 13, 17, 22, 19 }
+#elif NUM_CHANNELS == 10
+#define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE (uint8_t[]){ 15, 25, 26, 20, 13, 17, 22, 19, 11, 14 }
 #elif NUM_CHANNELS == 12
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE (uint8_t[]){ 15, 25, 26, 20, 13, 17, 22, 19, 11, 14, 18, 23 }
+#elif NUM_CHANNELS == 14
+#define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE (uint8_t[]){ 15, 25, 26, 20, 13, 17, 22, 19, 11, 14, 18, 23, 12, 16 }
 #else
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE TSCH_HOPPING_SEQUENCE_16_16
 #endif
 
-/* Optimal pledge channel scan duration */
 #define TSCH_CONF_CHANNEL_SCAN_DURATION (SF_LENGTH * (CLOCK_SECOND / 100))
 
-/* High-capacity Neighbor & Queue Tables for 500-node Cooja Native Simulations */
-#define NBR_TABLE_CONF_MAX_NEIGHBORS 128
+/* High-capacity tables & ring buffers so dense 500-node networks never drop joins */
+#define NBR_TABLE_CONF_MAX_NEIGHBORS 256
 #define NETSTACK_MAX_ROUTE_ENTRIES 512
-#define TSCH_QUEUE_CONF_MAX_NEIGHBOR_QUEUES 64
+#define TSCH_QUEUE_CONF_MAX_NEIGHBOR_QUEUES 128
 #define TSCH_SCHEDULE_CONF_MAX_LINKS 64
+#define TSCH_CONF_MAX_INCOMING_PACKETS 32
+#define QUEUEBUF_CONF_NUM 64
 #define UIP_CONF_BUFFER_SIZE 240
 #define UIP_CONF_UDP 1
 #define UIP_CONF_TCP 0
