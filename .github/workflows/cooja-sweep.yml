@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         scheme: [1, 2, 3, 4, 5, 6, 7, 8]
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] # Groups 1-5: 10-pt Node sweep (50..500); Group 6: Channels; Group 7: Slotframes; Group 8: EB intervals
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
     steps:
       - name: Checkout repository
@@ -26,16 +26,37 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Cache Gradle Dependencies Across All 128 Jobs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            /home/user/.gradle/caches
+          key: cooja-gradle-${{ hashFiles('contiki-ng-define/tools/cooja/build.gradle') }}
+          restore-keys: |
+            cooja-gradle-
+
       - name: Run Cooja Headless Simulation Batch
         run: |
           mkdir -p /home/user
           ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
+
+          # Reuse pre-existing Gradle cache from /home/user/.gradle if available
+          if [ -d "/home/user/.gradle/caches" ] && [ ! -d "$HOME/.gradle/caches" ]; then
+            mkdir -p "$HOME/.gradle"
+            cp -rn /home/user/.gradle/* "$HOME/.gradle/" 2>/dev/null || true
+          fi
 
           if [ ! -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
             echo "tools/cooja missing from repo checkout, cloning Cooja..."
             rm -rf /home/user/contiki-ng/tools/cooja
             git clone --depth 1 --recursive https://github.com/contiki-ng/cooja.git /home/user/contiki-ng/tools/cooja
           fi
+
+          # Ensure Google Maven Central mirror is injected into build.gradle
+          sed -i 's/mavenCentral()/maven { url "https:\/\/maven-central.storage-download.googleapis.com\/maven2\/" }\n    mavenCentral()/g' \
+            /home/user/contiki-ng/tools/cooja/build.gradle || true
 
           rm -rf Statistics/*
           python3 -c "import scripts.run_cooja_headless as r; r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }})"
@@ -98,6 +119,7 @@ jobs:
             Statistics/
             *.png
             Plots/
+            Results/
 
       - name: Auto-Commit Merged Results to Repository
         run: |
@@ -107,4 +129,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged 64-group smooth Cooja statistics and plots" && git pull --rebase --autostash origin main && git push origin main)
+          git diff --staged --quiet || (git commit -m "Auto-update merged Cooja statistics, Markov Fig 6, and Figs 9-14 PDFs" && git pull --rebase --autostash origin main && git push origin main)

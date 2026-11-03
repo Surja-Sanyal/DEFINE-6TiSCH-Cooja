@@ -191,9 +191,17 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
         env["JAVA_HOME"] = java17_path
         env["PATH"] = f"{java17_path}/bin:" + env.get("PATH", "")
 
-    cmd = ["./gradlew", "run", f"--args=--no-gui {csc_path}"]
+    cmd = ["./gradlew", "--no-daemon", "run", f"--args=--no-gui {csc_path}"]
     print(f"Executing: {' '.join(cmd)} in {COOJA_DIR} (Nodes: {n_nodes}, Area: {area}m)")
     proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
+    if proc.returncode != 0 and "Could not resolve all files" in (proc.stderr + proc.stdout):
+        import time
+        for attempt in range(1, 4):
+            print(f"Maven Central transient error, retrying Gradle in {attempt * 5}s (attempt {attempt}/3)...")
+            time.sleep(attempt * 5)
+            proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
+            if proc.returncode == 0 or "Could not resolve all files" not in (proc.stderr + proc.stdout):
+                break
 
     testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
     if proc.returncode != 0 and not (os.path.exists(testlog_path) and "CSV_JOIN" in open(testlog_path, errors="ignore").read()):
