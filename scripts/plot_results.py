@@ -11,33 +11,49 @@ RESULTS_DIR = os.path.join(ROOT_DIR, "Results")
 os.makedirs(PLOTS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# Clean, non-cluttered styles: DEFINE is bold solid w/ filled circle;
+# Baselines use thin crisp lines (lw=1.35) and white-centered markers so lines never obscure marker shapes!
 MECHANISMS = {
-    "p":   ("DEFINE",    "#1f77b4", "o", "-"),
-    "e":   ("6TiSCH-MC", "#ff7f0e", "s", "--"),
-    "r":   ("EDBA-SA",   "#d62728", "^", "-."),
-    "d":   ("ECV-SA",    "#2ca02c", "v", ":"),
-    "a_2": ("ATP: 2",    "#7f7f7f", "d", "--"),
-    "t":   ("TRGB",      "#9467bd", "P", "-."),
-    "c":   ("CSMJ",      "#8c564b", "X", ":"),
-    "s":   ("EASE",      "#e377c2", "*", "--"),
+    "p":   ("DEFINE",     "#0055b3", "o", "-",                2.2, "#0055b3"),
+    "e":   ("6TiSCH-MC",  "#ff7f0e", "s", (0, (5, 2)),        1.35, "white"),
+    "r":   ("EDBA-SA",    "#d62728", "^", (0, (4, 2, 1, 2)),  1.35, "white"),
+    "d":   ("ECV-SA",     "#2ca02c", "v", (0, (2, 1.5)),      1.35, "white"),
+    "a_2": ("ATP: 2",     "#555555", "D", (0, (6, 2)),        1.35, "white"),
+    "t":   ("TRGB",       "#8c564b", "P", (0, (3, 1.5, 1, 1.5)), 1.35, "white"),
+    "c":   ("CSMJ",       "#9467bd", "X", (0, (1.5, 1.5)),    1.35, "white"),
+    "s":   ("EASE",       "#e377c2", "*", (0, (4, 1.5)),      1.35, "white"),
 }
 
 def save_standalone_legend():
-    """Generate a standalone 2x4 legend banner for IEEE TMC multi-panel figures."""
-    handles = [
-        Line2D([0], [0], color=color, marker=marker, linestyle=ls, linewidth=2.0, markersize=7, label=label)
-        for _, (label, color, marker, ls) in MECHANISMS.items()
-    ]
-    fig = plt.figure(figsize=(6.8, 0.75), dpi=300)
+    """Generate a crystal-clear 2x4 legend banner with white-centered markers."""
+    handles = []
+    for _, (label, color, marker, ls, lw, mfc) in MECHANISMS.items():
+        ms = 8.5 if marker == "*" else 6.8
+        handles.append(
+            Line2D(
+                [0], [0],
+                color=color,
+                marker=marker,
+                linestyle=ls,
+                linewidth=lw,
+                markersize=ms,
+                markerfacecolor=mfc,
+                markeredgecolor=color,
+                markeredgewidth=1.5,
+                label=label,
+            )
+        )
+    fig = plt.figure(figsize=(7.2, 0.72), dpi=300)
     fig.legend(
         handles=handles,
         loc="center",
         ncol=4,
         frameon=True,
-        edgecolor="black",
+        edgecolor="#333333",
         fontsize=10.5,
-        handlelength=2.4,
-        columnspacing=1.5,
+        handlelength=3.2,
+        handletextpad=0.6,
+        columnspacing=1.6,
     )
     plt.axis("off")
     for out_path in [
@@ -47,7 +63,7 @@ def save_standalone_legend():
         fig.savefig(out_path, dpi=300, bbox_inches="tight", pad_inches=0.04)
     fig.savefig(os.path.join(RESULTS_DIR, "legend_only.pdf"), format="pdf", bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
-    print("Saved standalone 2x4 legend: legend_only.png and Results/legend_only.pdf")
+    print("Saved high-clarity 2x4 legend: legend_only.png and Results/legend_only.pdf")
 
 def load_raw_data(prefix):
     candidates = glob.glob(os.path.join(STAT_DIR, f"_{prefix}_cooja_stats_.txt"))
@@ -77,8 +93,11 @@ def get_series(prefix, x_col, fixed_filters):
     return np.array([by_x[k] for k in sorted(by_x.keys())])
 
 def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name=None, x_scale=1.0, y_scale=1.0, is_pct=False, is_total_energy=False, is_duty=False):
-    plt.figure(figsize=(5.6, 3.9), dpi=300)
-    for key, (label, color, marker, ls) in MECHANISMS.items():
+    plt.figure(figsize=(5.5, 3.8), dpi=300)
+    # Plot baselines first, then DEFINE on top (zorder=10) so DEFINE is never buried
+    order = ["e", "r", "d", "a_2", "t", "c", "s", "p"]
+    for key in order:
+        label, color, marker, ls, lw, mfc = MECHANISMS[key]
         mat = get_series(key, x_col, fixed_filters)
         if mat is None or len(mat) == 0:
             continue
@@ -91,21 +110,35 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
             y = np.minimum(100.0, ((mat[:, 10] + mat[:, 11] * 0.05) / (mat[:, 0] * 360000.0)) * 100.0)
         else:
             y = mat[:, col_idx] * y_scale
-        plt.plot(x, y, label=label, color=color, marker=marker, linestyle=ls, linewidth=2.0, markersize=6.5)
+
+        ms = 8.0 if marker == "*" else 6.2
+        z = 10 if key == "p" else 3
+        plt.plot(
+            x, y,
+            label=label,
+            color=color,
+            marker=marker,
+            linestyle=ls,
+            linewidth=lw,
+            markersize=ms,
+            markerfacecolor=mfc,
+            markeredgecolor=color,
+            markeredgewidth=1.4,
+            zorder=z,
+        )
 
     plt.xlabel(xlabel, fontsize=13)
     plt.ylabel(ylabel, fontsize=13)
     plt.xticks(fontsize=11)
     plt.yticks(fontsize=11)
-    plt.grid(True, linestyle="--", alpha=0.5)
-    # Intentionally legend-free: shared 2x4 legend_only.pdf is placed at the top of each LaTeX figure
+    plt.grid(True, linestyle="--", alpha=0.45)
     plt.tight_layout()
     for out_dir in [ROOT_DIR, PLOTS_DIR]:
         plt.savefig(os.path.join(out_dir, png_name), dpi=300, bbox_inches="tight")
     if pdf_name:
         plt.savefig(os.path.join(RESULTS_DIR, pdf_name), format="pdf", bbox_inches="tight")
     plt.close()
-    print(f"Saved legend-free {png_name}" + (f" and Results/{pdf_name}" if pdf_name else ""))
+    print(f"Saved crisp {png_name}" + (f" and Results/{pdf_name}" if pdf_name else ""))
 
 if __name__ == "__main__":
     save_standalone_legend()
