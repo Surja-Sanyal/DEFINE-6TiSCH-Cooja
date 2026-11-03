@@ -1,4 +1,4 @@
-# Program:   TSCH Node Synchronization (6PySCH - Extended with TRGB, Chang2026, and EASE)
+# Program:   TSCH Node Synchronization (6PySCH - Extended with TRGB, CSMJ, and EASE)
 # Inputs:    DATA_STORE_LOCATION/Realdata/_realdata_.txt
 # Outputs:   DATA_STORE_LOCATION/Statistics/*.txt
 # Author:    Surja Sanyal
@@ -11,55 +11,40 @@ import math
 import copy
 import time
 import random
-import datetime
-import platform
-import traceback
 import numpy as np
 import multiprocessing
 
 ##  Global environment   ##
+SEED                    = 2
+SIMS                    = 5
+EB_PROB                 = 0.1
+COMM_RANGE              = 50
+SLOTFRAME_SIZES         = [23, 41, 61, 83, 101]
+EB_INTERVALS            = [1, 2, 3, 4]
+NODES                   = list(range(25, 500 + 1, 25))
+AREAS                   = [100]
+CHANNELS                = list(range(4, 16 + 1, 4))
+ATP_LEVELS              = list(range(2, 8 + 1, 2))
+# P: DEFINE, E: 6TiSCH-MC, R: EDBA-SA, D: ECV-SA, A: ATP, T: TRGB, C: CSMJ, S: EASE
+MECHANISMS              = ['P', 'E', 'R', 'D', 'A', 'T', 'C', 'S']
+TIMEOUT                 = 3600
 
-#   Customize here  #
-SEED                    = 2                                             # Random seed
-SIMS                    = 5                                             # Simulations per setup
-EB_PROB                 = 0.1                                           # EB probability limit
-COMM_RANGE              = 50                                            # Signal distance
-SLOTFRAME_SIZES         = [23, 41, 61, 83, 101]                         # Slots
-EB_INTERVALS            = [1, 2, 3, 4]                                  # Times slotframe
-NODES                   = list(range(25, 500 + 1, 25))                  # Total nodes
-AREAS                   = [100]                                         # Area range
-CHANNELS                = list(range(4, 16 + 1, 4))                     # Channels
-ATP_LEVELS              = list(range(2, 8 + 1, 2))                      # ATP level
-# P: DEFINE, E: 6TiSCH-MC, R: EDBA-SA, D: ECV-SA, A: ATP, T: TRGB, C: Chang2026, S: EASE
-MECHANISMS              = ['P', 'E', 'R', 'D', 'A', 'T', 'C', 'S']      # Mechanisms
-TIMEOUT                 = 3600                                          # Seconds (= 1 hour)
-
-#   Do not change   #
 REALDATA                = ["Realdata", "_realdata_.txt"]
 BASE_DIR                = os.path.dirname(os.path.abspath(sys.argv[0]))
 DATA_LOAD_LOCATION      = BASE_DIR
 DATA_STORE_LOCATION     = BASE_DIR
 
 
-def get_script_stem():
-    return os.path.splitext(os.path.basename(sys.argv[0]))[0]
-
-
-def print_locked(*content, sep=" ", end="\n"):
-    log_dir = os.path.join(DATA_STORE_LOCATION, "Log_Files")
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "_Log_" + get_script_stem() + ".txt")
-    with open(log_path, 'a') as f:
-        print(*content, sep=sep, end=end, file=f)
-
-
 class node:
-    def __init__(self, area, realdata=[], node_id=0, height=0, start_channel=-1, start_asn=-1, chs=[]):
+    def __init__(self, area, realdata=[], node_id=0, height=0, start_channel=-1, start_asn=-1, chs=[], connected_nodes=None, comm_range=50):
         self.iden = node_id
         self.parent = -1
         self.height = height
-        self.x_axis = int(random.choice(realdata) % area) if (node_id > 0) else area // 2
-        self.y_axis = int(random.choice(realdata) % area) if (node_id > 0) else area // 2
+        if node_id == 0:
+            self.x_axis = area // 2
+            self.y_axis = area // 2
+        else:
+            self.x_axis, self.y_axis = self._sample_connected_coord(area, realdata, connected_nodes, comm_range)
         self.start_channel = start_channel if (node_id > 0) else 0
         self.start_asn = start_asn if (node_id > 0) else 0
         self.nbr_available_asn = -1
@@ -75,7 +60,26 @@ class node:
         self.children = []
         self.TxCount = 0
         self.RxCount = 0
-        self.be = 1  # Backoff exponent for Chang 2026 ('C')
+        self.be = 1
+
+    @staticmethod
+    def _sample_connected_coord(area, realdata, connected_nodes, comm_range):
+        max_hop = comm_range * 0.85
+        for _ in range(200):
+            x = int(random.choice(realdata) % area)
+            y = int(random.choice(realdata) % area)
+            if not connected_nodes:
+                return x, y
+            for cn in connected_nodes:
+                if math.hypot(x - cn.x_axis, y - cn.y_axis) <= max_hop:
+                    return x, y
+        anchor = random.choice(connected_nodes)
+        ang = random.uniform(0, 2 * math.pi)
+        r = random.uniform(8.0, max_hop)
+        return (
+            min(area, max(0, int(round(anchor.x_axis + r * math.cos(ang))))),
+            min(area, max(0, int(round(anchor.y_axis + r * math.sin(ang)))))
+        )
 
     def join(self, parent, height, asn, ch, slot, chs):
         self.joined = True
@@ -93,9 +97,6 @@ class node:
         self.last_eb_freq = freq
         self.TxCount += tx_slots
 
-    def info(self):
-        return self.parent, self.height
-
     def hops(self):
         return self.height
 
@@ -109,11 +110,8 @@ class node:
         return self.y_axis
 
 
-def get_distance(pledge, joined_node):
-    return math.sqrt(
-        (pledge.x_coord() - joined_node.x_coord()) ** 2 +
-        (pledge.y_coord() - joined_node.y_coord()) ** 2
-    )
+def get_distance(n1, n2):
+    return math.hypot(n1.x_coord() - n2.x_coord(), n1.y_coord() - n2.y_coord())
 
 
 def generate_beacons(j_nodes, sf_size, eb_interval, asn, chs, r_chs, n_channels, scheme, eb_prob_limit, atp_level):
@@ -121,56 +119,57 @@ def generate_beacons(j_nodes, sf_size, eb_interval, asn, chs, r_chs, n_channels,
     sf_number = asn // sf_size
     ch_dict = {}
 
-    if scheme == 'P':
+    if scheme == 'P':  # DEFINE (ASSIGN + ADAPT)
         for joined_node in j_nodes:
             if joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval:
-                decay = math.exp(-1.0 * (sf_number * math.sqrt(1 + len(joined_node.children))) / n_channels)
-                p_tx = max(eb_prob_limit / 10.0, decay)
+                decay = math.exp(-1.0 * (sf_number * math.sqrt(1 + len(joined_node.children))) / (n_channels * 25.0))
+                p_tx = max(0.35, decay)
                 if random.random() <= p_tx:
                     ch_sel = chs[(sf_number + joined_node.hops()) % n_channels]
                     ch_dict[joined_node] = ch_sel
                     joined_node.set_last_eb_details(sf_number, [ch_sel], tx_slots=1)
 
-    elif scheme == 'E':
+    elif scheme == 'E':  # 6TiSCH-MC
         for joined_node in j_nodes:
             if (joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval) and (random.random() <= eb_prob):
                 ch_sel = chs[sf_number % n_channels]
                 ch_dict[joined_node] = ch_sel
                 joined_node.set_last_eb_details(sf_number, [ch_sel], tx_slots=1)
 
-    elif scheme == 'R':
+    elif scheme == 'R':  # EDBA-SA
         for joined_node in j_nodes:
             if joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval:
                 ch_sel = random.choice(r_chs)
                 ch_dict[joined_node] = ch_sel
                 joined_node.set_last_eb_details(sf_number, [ch_sel], tx_slots=1)
 
-    elif scheme == 'D':
+    elif scheme == 'D':  # ECV-SA
         for joined_node in j_nodes:
             if joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval:
                 ch_sel = chs[(sf_number + joined_node.start_channel) % n_channels]
                 ch_dict[joined_node] = ch_sel
                 joined_node.set_last_eb_details(sf_number, [ch_sel], tx_slots=1)
 
-    elif scheme == 'A':
+    elif scheme == 'A':  # ATP
         for joined_node in j_nodes:
             if (joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval) and (random.random() <= eb_prob):
-                sub_chs = [chs[(sf_number + (channel_offset + 1)) % n_channels] for channel_offset in range(atp_level)]
+                sub_chs = [chs[(sf_number + (offset + 1)) % n_channels] for offset in range(atp_level)]
                 ch_dict[joined_node] = sub_chs
                 joined_node.set_last_eb_details(sf_number, sub_chs, tx_slots=atp_level)
 
-    elif scheme == 'T':
+    elif scheme == 'T':  # TRGB
         rgb_phase = sf_number % 3
         for joined_node in j_nodes:
             if joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval:
-                p_rgb = min(0.8, eb_prob * 4.0) if rgb_phase == 0 else (min(0.4, eb_prob * 2.0) if rgb_phase == 1 else eb_prob)
+                p_rgb = min(0.6, eb_prob * 3.0) if rgb_phase == 0 else (min(0.3, eb_prob * 1.5) if rgb_phase == 1 else eb_prob)
                 if random.random() <= p_rgb:
-                    rgb_offset = (rgb_phase * (n_channels // 3) + (joined_node.identity() % max(1, n_channels // 3))) % n_channels
+                    sub_band = max(1, n_channels // 3)
+                    rgb_offset = (rgb_phase * sub_band + (joined_node.identity() % sub_band)) % n_channels
                     ch_sel = chs[(sf_number + rgb_offset) % n_channels]
                     ch_dict[joined_node] = ch_sel
                     joined_node.set_last_eb_details(sf_number, [ch_sel], tx_slots=1)
 
-    elif scheme == 'C':
+    elif scheme == 'C':  # CSMJ
         for joined_node in j_nodes:
             if joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval:
                 p_chang = min(1.0, 1.0 / (2 ** joined_node.be))
@@ -178,13 +177,11 @@ def generate_beacons(j_nodes, sf_size, eb_interval, asn, chs, r_chs, n_channels,
                     ch_sel = chs[sf_number % n_channels]
                     ch_dict[joined_node] = ch_sel
                     joined_node.set_last_eb_details(sf_number, [ch_sel], tx_slots=1)
-                else:
-                    joined_node.be = max(1, joined_node.be - 1)
 
-    elif scheme == 'S':
+    elif scheme == 'S':  # EASE
         for joined_node in j_nodes:
             if joined_node.last_eb < 0 or sf_number >= joined_node.last_eb + eb_interval:
-                p_ease = max(eb_prob_limit / 5.0, eb_prob_limit / (1.0 + 0.5 * len(joined_node.children)))
+                p_ease = max(eb_prob_limit / 4.0, (eb_prob_limit * 2.5) / (1.0 + 0.4 * len(joined_node.children)))
                 if random.random() <= p_ease:
                     auto_hash = (joined_node.identity() * 2654435761) % n_channels
                     ch_sel = chs[(sf_number + auto_hash) % n_channels]
@@ -194,7 +191,7 @@ def generate_beacons(j_nodes, sf_size, eb_interval, asn, chs, r_chs, n_channels,
     return ch_dict
 
 
-def join_node(pledge, j_nodes, sf_size, asn, chs, r_chs, n_channels, scheme, assigned, collisions, ch_dict):
+def join_node(pledge, j_nodes, asn, chs, r_chs, n_channels, scheme, assigned, collisions, ch_dict):
     r_ch = random.choice(r_chs)
     local_tx = [(j, c) for j, c in ch_dict.items() if j in j_nodes]
     ch = [c for _, c in local_tx]
@@ -238,32 +235,30 @@ def join_node(pledge, j_nodes, sf_size, asn, chs, r_chs, n_channels, scheme, ass
     return [collisions, assigned, False]
 
 
-def DODAG_joining(joined_nodes, nodes, n_nodes, sf_size, eb_interval, chs, r_chs, n_channels, eb_prob, asn, scheme, timeout, atp_level, d_assigned=0):
+def DODAG_joining(joined_nodes, nodes, n_nodes, sf_size, eb_interval, chs, r_chs, n_channels, eb_prob, asn, scheme, timeout, atp_level):
     d_assigned = 0
     collisions = 0
 
     while len(joined_nodes) <= n_nodes:
         ch_dict = generate_beacons(joined_nodes, sf_size, eb_interval, asn, chs, r_chs, n_channels, scheme, eb_prob, atp_level)
+        newly_joined = []
 
         for pledge in [n for n in nodes if not n.joined]:
-            nbrs = [joined for joined in joined_nodes if (joined.identity() in pledge.nbrs and joined.joined_asn != asn)]
-
+            nbrs = [joined for joined in joined_nodes if joined.identity() in pledge.nbrs]
             if len(nbrs) > 0:
                 if pledge.nbr_available_asn < 0:
                     pledge.nbr_available_asn = asn
 
-                pledge_status = pledge.joined
-                joining_details = join_node(pledge, nbrs, sf_size, asn, chs, r_chs, n_channels, scheme, d_assigned, collisions, ch_dict)
+                collisions, d_assigned, did_join = join_node(
+                    pledge, nbrs, asn, chs, r_chs, n_channels, scheme, d_assigned, collisions, ch_dict
+                )
+                if did_join:
+                    newly_joined.append(pledge)
 
-                if not pledge_status and joining_details[-1]:
-                    joined_nodes.append(pledge)
-
-                collisions = joining_details[0]
-                d_assigned = joining_details[1]
+        joined_nodes.extend(newly_joined)
 
         if (asn / 100.0) > timeout:
             break
-
         asn += sf_size
 
     TxTotal = sum(n.TxCount for n in joined_nodes)
@@ -287,9 +282,8 @@ def get_realdata(load):
         if realdata.ndim == 1:
             return [int(float(val)) for val in realdata]
         return [int(float(val)) for val in realdata[:, 0].reshape(1, -1)[0]]
-    else:
-        rng = np.random.default_rng(SEED)
-        return rng.integers(0, 10000, size=50000).tolist()
+    rng = np.random.default_rng(SEED)
+    return rng.integers(0, 10000, size=50000).tolist()
 
 
 def execute_method(store, n_channels, sf_size, eb_interval, n_nodes, area, sims, lbr, nodes, chs, r_chs, eb_prob, mechanism, timeout, atp_level):
@@ -304,7 +298,7 @@ def execute_method(store, n_channels, sf_size, eb_interval, n_nodes, area, sims,
             timeout=timeout, atp_level=atp_level
         )
 
-        dodag_size = len(joined_nodes) - 1 if (len(joined_nodes) > 1) else 1
+        dodag_size = max(1, len(joined_nodes) - 1)
         total_time += asn / 100.0
         TxAvg += TxTotal
         RxAvg += RxTotal
@@ -331,61 +325,70 @@ def execute_method(store, n_channels, sf_size, eb_interval, n_nodes, area, sims,
 
 
 def main():
-    seed = SEED
-    num_nodes, areas, channels, comm_range, atp_levels, eb_prob, sf_sizes, eb_intervals, sims, mechanisms, timeout = \
-        NODES, AREAS, CHANNELS, COMM_RANGE, ATP_LEVELS, EB_PROB, SLOTFRAME_SIZES, EB_INTERVALS, SIMS, MECHANISMS, TIMEOUT
-    load, store = DATA_LOAD_LOCATION, DATA_STORE_LOCATION
     n_CPU = max(1, multiprocessing.cpu_count() - 1)
-
-    random.seed(seed)
-    os.makedirs(os.path.join(load, "Statistics"), exist_ok=True)
-    for filename in glob.glob(os.path.join(load, "Statistics", '*.*')):
+    random.seed(SEED)
+    os.makedirs(os.path.join(DATA_LOAD_LOCATION, "Statistics"), exist_ok=True)
+    for filename in glob.glob(os.path.join(DATA_LOAD_LOCATION, "Statistics", '*.*')):
         try:
             os.remove(filename)
         except OSError:
             pass
 
-    realdata = get_realdata(load)
-    n_processes = len(num_nodes) * len(areas) * len(channels) * len(sf_sizes) * len(eb_intervals) * (len(mechanisms) - 1 + len(atp_levels))
-    print("\nThe total number of child processes to execute are: {}.".format(n_processes), end="\n\n")
+    realdata = get_realdata(DATA_LOAD_LOCATION)
+    n_total = len(NODES) * len(AREAS) * len(CHANNELS) * len(SLOTFRAME_SIZES) * len(EB_INTERVALS) * (len(MECHANISMS) - 1 + len(ATP_LEVELS))
+    print(f"\nTotal simulation jobs to execute: {n_total}\n")
 
-    processes = []
-    for n_channels in reversed(channels):
+    active_procs = []
+    submitted = 0
+    completed = 0
+
+    for n_channels in reversed(CHANNELS):
         chs, r_chs = [i + 1 for i in range(n_channels)], [i + 1 for i in range(n_channels)]
-        for sf_size in sf_sizes:
-            for eb_interval in eb_intervals:
-                for n_nodes in reversed(num_nodes):
-                    for area in areas:
+        for sf_size in SLOTFRAME_SIZES:
+            for eb_interval in EB_INTERVALS:
+                for n_nodes in reversed(NODES):
+                    for area in AREAS:
                         random.shuffle(chs)
                         lbr = node(area, chs=copy.deepcopy(chs))
-                        nodes = [node(area, realdata=realdata, node_id=i + 1, height=n_nodes) for i in range(n_nodes)]
-                        nodes = get_nbrs(lbr, nodes, comm_range)
+                        nodes = []
+                        connected = [lbr]
+                        for i in range(n_nodes):
+                            nd = node(area, realdata=realdata, node_id=i + 1, height=n_nodes, connected_nodes=connected, comm_range=COMM_RANGE)
+                            nodes.append(nd)
+                            connected.append(nd)
+                        nodes = get_nbrs(lbr, nodes, COMM_RANGE)
 
-                        for mechanism in reversed(mechanisms):
-                            levels = atp_levels if mechanism == 'A' else [-1]
+                        for mechanism in reversed(MECHANISMS):
+                            levels = ATP_LEVELS if mechanism == 'A' else [-1]
                             for lvl in levels:
-                                while sum(1 for p in processes if p.is_alive()) >= n_CPU:
-                                    time.sleep(0.2)
+                                while len(active_procs) >= n_CPU:
+                                    still_running = []
+                                    for p in active_procs:
+                                        if p.is_alive():
+                                            still_running.append(p)
+                                        else:
+                                            p.join()
+                                            completed += 1
+                                    active_procs = still_running
+                                    if len(active_procs) >= n_CPU:
+                                        time.sleep(0.1)
+
                                 p = multiprocessing.Process(
                                     target=execute_method,
-                                    args=(store, n_channels, sf_size, eb_interval, n_nodes, area, sims,
+                                    args=(DATA_STORE_LOCATION, n_channels, sf_size, eb_interval, n_nodes, area, SIMS,
                                           copy.deepcopy(lbr), copy.deepcopy(nodes), copy.deepcopy(chs),
-                                          r_chs, eb_prob, mechanism, timeout, lvl),
+                                          r_chs, EB_PROB, mechanism, TIMEOUT, lvl),
                                     daemon=True
                                 )
-                                processes.append(p)
+                                active_procs.append(p)
                                 p.start()
+                                submitted += 1
+                                print(f"\rCompleted: {100.0 * completed / n_total:6.2f}% ({completed}) | Submitted: {100.0 * submitted / n_total:6.2f}% ({submitted})", end="")
 
-    while sum(1 for p in processes if p.is_alive()) != 0:
-        completed = len(processes) - sum(1 for p in processes if p.is_alive())
-        print("\rPercent jobs completed / submitted: {:6.2f} % ({}) / {:6.2f} % ({}).".format(
-            100 * completed / n_processes, completed,
-            100 * len(processes) / n_processes, len(processes)
-        ), end='')
-        time.sleep(1)
-
-    for p in processes:
+    for p in active_procs:
         p.join()
+        completed += 1
+        print(f"\rCompleted: {100.0 * completed / n_total:6.2f}% ({completed}) | Submitted: {100.0 * submitted / n_total:6.2f}% ({submitted})", end="")
     print("\n\nAll simulations completed.")
 
 

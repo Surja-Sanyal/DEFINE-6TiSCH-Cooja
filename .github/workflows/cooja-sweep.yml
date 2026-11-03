@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         scheme: [1, 2, 3, 4, 5, 6, 7, 8]
-        group: [1, 2, 3, 4, 5, 6, 7, 8] # Groups 1-5: 10-pt Node sweep (50..500); Group 6: Channels; Group 7: Slotframes; Group 8: EB intervals
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] # Groups 1-5: 10-pt Node sweep (50..500); Group 6: Channels; Group 7: Slotframes; Group 8: EB intervals
 
     steps:
       - name: Checkout repository

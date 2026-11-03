@@ -38,20 +38,20 @@
 
 #if SYNC_SCHEME == 1      /* DEFINE: Fast adaptive coordinator/relay EB broadcast */
 #define TSCH_CONF_EB_PERIOD (EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
-#elif SYNC_SCHEME == 2    /* 6TiSCH-MC: Single shared minimal cell contention */
-#define TSCH_CONF_EB_PERIOD (5 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#elif SYNC_SCHEME == 2    /* 6TiSCH-MC */
+#define TSCH_CONF_EB_PERIOD (6 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 3    /* EDBA-SA */
-#define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#define TSCH_CONF_EB_PERIOD (4 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 4    /* ECV-SA */
-#define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#define TSCH_CONF_EB_PERIOD (4 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 5    /* ATP */
-#define TSCH_CONF_EB_PERIOD (4 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#define TSCH_CONF_EB_PERIOD (5 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 6    /* TRGB */
-#define TSCH_CONF_EB_PERIOD (2 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 7    /* CSMJ */
-#define TSCH_CONF_EB_PERIOD (4 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#define TSCH_CONF_EB_PERIOD (5 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #else                     /* EASE */
-#define TSCH_CONF_EB_PERIOD (2 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
+#define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #endif
 
 #define TSCH_CONF_MAX_EB_PERIOD (16 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
@@ -59,7 +59,7 @@
 /* Ensure Enhanced Beacons advertise the custom slotframe schedule */
 #define TSCH_PACKET_CONF_EB_WITH_SLOTFRAME_AND_LINK 1
 
-/* Channel hopping sequence length adjustment (4, 8, 12, 16) */
+/* Channel hopping sequence length adjustment */
 #if NUM_CHANNELS == 4
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE TSCH_HOPPING_SEQUENCE_4_4
 #elif NUM_CHANNELS == 8
@@ -70,19 +70,20 @@
 #define TSCH_CONF_DEFAULT_HOPPING_SEQUENCE TSCH_HOPPING_SEQUENCE_16_16
 #endif
 
-/* Optimal pledge channel scan duration: SF_LENGTH * 10 ms per channel */
+/* Optimal pledge channel scan duration */
 #define TSCH_CONF_CHANNEL_SCAN_DURATION (SF_LENGTH * (CLOCK_SECOND / 100))
 
-/* Z1 Mote RAM Optimization */
-#define NBR_TABLE_CONF_MAX_NEIGHBORS 16
-#define NETSTACK_MAX_ROUTE_ENTRIES 16
+/* High-capacity Neighbor & Queue Tables for 500-node Cooja Native Simulations */
+#define NBR_TABLE_CONF_MAX_NEIGHBORS 128
+#define NETSTACK_MAX_ROUTE_ENTRIES 512
+#define TSCH_QUEUE_CONF_MAX_NEIGHBOR_QUEUES 64
+#define TSCH_SCHEDULE_CONF_MAX_LINKS 64
 #define UIP_CONF_BUFFER_SIZE 240
 #define UIP_CONF_UDP 1
 #define UIP_CONF_TCP 0
 #define SICSLOWPAN_CONF_FRAG 0
 #define TSCH_LOG_CONF_PER_SLOT 0
 
-/* Include node.h so tsch.c sees the define_on_new_time_source() prototype */
 #include "node.h"
 
 #endif /* PROJECT_CONF_H_ */

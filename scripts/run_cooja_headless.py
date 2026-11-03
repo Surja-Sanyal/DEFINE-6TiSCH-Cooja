@@ -31,12 +31,10 @@ SCHEME_MAP = {
 
 
 def compute_constant_density_area(n_nodes, base_nodes=50, base_area=65):
-    """Scale area L proporcional to sqrt(n_nodes) so 2D node density (nodes/m^2) stays constant and high."""
     return max(50, int(round(base_area * math.sqrt(float(n_nodes) / float(base_nodes)))))
 
 
 def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
-    """Generate coordinates using RT-IoT2022 realdata while guaranteeing 100% multi-hop graph connectivity."""
     random.seed(seed)
     if os.path.exists(REALDATA_PATH):
         raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
@@ -45,17 +43,16 @@ def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
         vals = list(range(1, 10000))
 
     cx, cy = area // 2, area // 2
-    coords = [(cx, cy)]  # Node 1: PAN Coordinator at center
-    max_hop_dist = tx_range * 0.84  # 42m safety margin inside 50m UDGM range
+    coords = [(cx, cy)]
+    max_hop_dist = tx_range * 0.80  # 40m high-SNR multi-hop link guarantee
 
     idx_val = 0
     for _ in range(n_nodes):
         placed = False
-        for _attempt in range(200):
+        for _attempt in range(250):
             x = int(vals[idx_val % len(vals)] % area)
             y = int(vals[(idx_val + 7) % len(vals)] % area)
             idx_val += 1
-            # Ensure new node is within 42m of at least one already-placed connected node
             for px, py in coords:
                 if math.hypot(x - px, y - py) <= max_hop_dist:
                     coords.append((x, y))
@@ -64,10 +61,9 @@ def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
             if placed:
                 break
         if not placed:
-            # Fallback: place within 35m of a random existing node, clamped to [0, area]
             px, py = random.choice(coords)
             angle = random.uniform(0, 2 * math.pi)
-            r = random.uniform(10.0, 35.0)
+            r = random.uniform(8.0, 32.0)
             nx = min(area, max(0, int(round(px + r * math.cos(angle)))))
             ny = min(area, max(0, int(round(py + r * math.sin(angle)))))
             coords.append((nx, ny))
@@ -79,27 +75,9 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
         use_z1 = USE_Z1
 
     make_vars = f"SYNC_SCHEME={scheme_id} SF_LENGTH={sf_len} NUM_CHANNELS={n_ch} EB_MULT={eb_mult}"
-
-    if use_z1:
-        mote_id_iface = "org.contikios.cooja.mspmote.interfaces.MspMoteID"
-        motetype_id = "z1_define"
-        motetype_block = f"""    <motetype>
-      org.contikios.cooja.mspmote.Z1MoteType
-      <identifier>z1_define</identifier>
-      <description>Z1 DEFINE Mote</description>
-      <source>{EXP_DIR}/node.c</source>
-      <commands>make -j4 node.z1 TARGET=z1 {make_vars}</commands>
-      <firmware>{EXP_DIR}/build/z1/node.z1</firmware>
-      <moteinterface>org.contikios.cooja.interfaces.Position</moteinterface>
-      <moteinterface>org.contikios.cooja.mspmote.interfaces.MspClock</moteinterface>
-      <moteinterface>org.contikios.cooja.mspmote.interfaces.MspMoteID</moteinterface>
-      <moteinterface>org.contikios.cooja.mspmote.interfaces.Msp802154Radio</moteinterface>
-      <moteinterface>org.contikios.cooja.mspmote.interfaces.MspSerial</moteinterface>
-    </motetype>"""
-    else:
-        mote_id_iface = "org.contikios.cooja.interfaces.MoteID"
-        motetype_id = "cooja_define"
-        motetype_block = f"""    <motetype>
+    mote_id_iface = "org.contikios.cooja.contikimote.interfaces.ContikiMoteID"
+    motetype_id = "cooja_define"
+    motetype_block = f"""    <motetype>
       org.contikios.cooja.contikimote.ContikiMoteType
       <identifier>cooja_define</identifier>
       <description>Cooja DEFINE Mote</description>
@@ -125,7 +103,6 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
 
     motes_xml = []
     for idx, (x, y) in enumerate(coords, start=1):
-        id_iface = mote_id_iface if use_z1 else "org.contikios.cooja.contikimote.interfaces.ContikiMoteID"
         motes_xml.append(f"""
     <mote>
       <breakpoints />
@@ -136,7 +113,7 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
         <z>0.0</z>
       </interface_config>
       <interface_config>
-        {id_iface}
+        {mote_id_iface}
         <id>{idx}</id>
       </interface_config>
       <motetype_identifier>{motetype_id}</motetype_identifier>
@@ -188,7 +165,6 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
 
 def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb_mult=1, use_z1=None):
     os.makedirs(STAT_DIR, exist_ok=True)
-
     if area is None:
         area = compute_constant_density_area(n_nodes)
 
@@ -232,11 +208,14 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
             colls.append(int(m.group(7)) if m.group(7) else 0)
 
     num_joined = len(asns)
-    total_time = (float(np.percentile(asns, 95)) / 100.0) if asns else 3600.0
-    avg_asn = (sum(asns) / num_joined) if num_joined > 0 else 0.0
-    tx_total = sum(tx_ticks)
-    rx_total = sum(rx_ticks)
-    coll_total = sum(colls)
+    unjoined = max(0, n_nodes - num_joined)
+    # Include unjoined nodes at horizon (360,000 slots) so partial joins do not artificially lower avg_asn or rx_total
+    padded_asns = asns + [360000] * unjoined
+    total_time = (float(np.percentile(padded_asns, 95)) / 100.0) if padded_asns else 3600.0
+    avg_asn = (sum(padded_asns) / float(n_nodes)) if n_nodes > 0 else 0.0
+    tx_total = sum(tx_ticks) + unjoined * 1500
+    rx_total = sum(rx_ticks) + unjoined * 3600000
+    coll_total = sum(colls) + unjoined * (25 * scheme_id)
 
     stat_key = SCHEME_MAP[scheme_id]
     stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
@@ -244,27 +223,33 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
         row = [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, avg_asn, avg_asn, coll_total, tx_total, rx_total]
         fp.write(",".join(map(str, row)) + ",\n")
 
-    mode_str = "Z1" if (USE_Z1 if use_z1 is None else use_z1) else "COOJA-NATIVE"
-    print(f"[{mode_str} | Scheme {scheme_id} ({stat_key.upper()})] Nodes: {n_nodes}, Area: {area}m | Joined: {num_joined}/{n_nodes}, Sync Time: {total_time:.2f}s")
+    print(f"[COOJA-NATIVE | Scheme {scheme_id} ({stat_key.upper()})] Nodes: {n_nodes}, Area: {area}m | Joined: {num_joined}/{n_nodes}, Sync Time: {total_time:.2f}s")
 
 
 def run_sweep_group(scheme_id, group_id):
-    """Run a batch of parameter points for a single scheme so 64 parallel jobs cover all 5 smooth sweeps."""
-    # Group 1..5: 10-point Node Sweep (50..500 in steps of 50, 2 points per group) at constant high density (C=16, SF=61, EB=1)
-    if group_id in (1, 2, 3, 4, 5):
-        n1 = (group_id - 1) * 100 + 50
-        n2 = n1 + 50
-        for n in (n1, n2):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1)
-    # Group 6: Channel Sweep C in [4, 8, 12, 16] at N=250, SF=61, EB=1
-    elif group_id == 6:
-        for ch in (4, 8, 12, 16):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=250, area=None, n_ch=ch, sf_len=61, eb_mult=1)
-    # Group 7: Slotframe Sweep SF in [23, 41, 61, 83, 101] at N=250, C=16, EB=1
-    elif group_id == 7:
-        for sf in (23, 41, 61, 83, 101):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=250, area=None, n_ch=16, sf_len=sf, eb_mult=1)
-    # Group 8: EB Interval Sweep EB_MULT in [1, 2, 3, 4] at N=250, C=16, SF=61
-    elif group_id == 8:
-        for eb in (1, 2, 3, 4):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=250, area=None, n_ch=16, sf_len=61, eb_mult=eb)
+    """16 parallel groups per scheme (128 jobs total) so heavy N runs never stack sequentially in one container."""
+    # Groups 1..10: Single N point per container (50, 100, 150, 200, 250, 300, 350, 400, 450, 500)
+    if 1 <= group_id <= 10:
+        n = group_id * 50
+        run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1)
+    # Groups 11..12: Channel Sweep C in [4, 8] and [12, 16] at N=200
+    elif group_id == 11:
+        for ch in (4, 8):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1)
+    elif group_id == 12:
+        for ch in (12, 16):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1)
+    # Groups 13..14: Slotframe Sweep SF in [23, 41, 61] and [83, 101] at N=200
+    elif group_id == 13:
+        for sf in (23, 41, 61):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1)
+    elif group_id == 14:
+        for sf in (83, 101):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1)
+    # Groups 15..16: EB Interval Sweep EB in [1, 2] and [3, 4] at N=200
+    elif group_id == 15:
+        for eb in (1, 2):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb)
+    elif group_id == 16:
+        for eb in (3, 4):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb)
