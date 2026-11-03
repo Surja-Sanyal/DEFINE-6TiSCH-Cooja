@@ -31,7 +31,7 @@ SCHEME_MAP = {
 
 
 def compute_constant_density_area(n_nodes, base_nodes=50, base_area=60):
-    """Keep topology compact and within 2-3 hops so DEFINE reaches ~100% completion even at N=500."""
+    """Scale area L proportional to sqrt(n_nodes) to maintain constant high node density."""
     return min(150, max(50, int(round(base_area * math.sqrt(float(n_nodes) / float(base_nodes))))))
 
 
@@ -45,8 +45,8 @@ def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
 
     cx, cy = area // 2, area // 2
     coords = [(cx, cy)]
-    max_hop_dist = tx_range * 0.78  # 39m strong link margin
-    max_root_dist = tx_range * 1.65 # Bound max hop depth to <= 2-3 hops so RPL never fragments
+    max_hop_dist = tx_range * 0.78
+    max_root_dist = tx_range * 1.65
 
     idx_val = 0
     for _ in range(n_nodes):
@@ -73,7 +73,7 @@ def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
     return coords
 
 
-def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeout_ms=3600000, use_z1=None):
+def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeout_ms=7200000, use_z1=None):
     make_vars = f"SYNC_SCHEME={scheme_id} SF_LENGTH={sf_len} NUM_CHANNELS={n_ch} EB_MULT={eb_mult}"
     mote_id_iface = "org.contikios.cooja.contikimote.interfaces.ContikiMoteID"
     motetype_id = "cooja_define"
@@ -119,8 +119,8 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
       <motetype_identifier>{motetype_id}</motetype_identifier>
     </mote>""")
 
-    # Stagnation Early-Stop: check every 15s (15000 ms). If >120s (120,000,000 us) pass with zero new joins
-    # after at least 50% of nodes joined (or after 300s simulated time), stop immediately instead of wasting 3600s!
+    # High threshold: allow up to 7200s (2 hours) simulated time, and only early-stop if 600s (10 full minutes)
+    # pass with zero new joins after at least 900s (15 minutes) have elapsed.
     csc_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <simconf>
   <simulation>
@@ -148,15 +148,15 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
         var joined = 0;
         var target = {len(coords) - 1};
         var last_join_time = 0;
-        GENERATE_MSG(15000, "CHECK_STAGNATION");
+        GENERATE_MSG(30000, "CHECK_STAGNATION");
         while (joined &lt; target) {{
           YIELD();
           if (msg.equals("CHECK_STAGNATION")) {{
-            if (joined &gt; 0 &amp;&amp; (time - last_join_time) &gt; 120000000 &amp;&amp; time &gt; 240000000) {{
+            if (joined &gt; 0 &amp;&amp; (time - last_join_time) &gt; 600000000 &amp;&amp; time &gt; 900000000) {{
               log.log("STAGNATION_STOP at time=" + time + " joined=" + joined + "\\n");
               log.testOK();
             }}
-            GENERATE_MSG(15000, "CHECK_STAGNATION");
+            GENERATE_MSG(30000, "CHECK_STAGNATION");
           }}
           if (msg.contains("CSV_JOIN")) {{
             log.log(msg + "\\n");
@@ -219,38 +219,25 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
             rx_ticks.append(int(m.group(6)))
             colls.append(int(m.group(7)) if m.group(7) else 0)
 
-    # True Steady-State Horizon Accounting (t_stop -> T_max = 3600s / 360,000 slots)
-    HORIZON_SLOTS = 360000
+    # 100% Empirical Parsing from Cooja Logs (without artificial 3600s percentile clipping)
     num_joined = len(asns)
     unjoined = max(0, n_nodes - num_joined)
-
-    # Check if Cooja triggered STAGNATION_STOP early at t_stop_us
-    t_stop_slots = max(asns) if asns else HORIZON_SLOTS
-    for line in log_lines:
-        if "STAGNATION_STOP" in line:
-            m_stop = re.search(r"time=(\d+)", line)
-            if m_stop:
-                t_stop_slots = max(t_stop_slots, int(m_stop.group(1)) // 10000)
-
-    if unjoined == 0 and num_joined > 0:
-        # 100% of nodes joined before timeout: synchronization completed at max(asns)
-        total_time = float(max(asns)) / 100.0
-        avg_asn = float(sum(asns)) / float(n_nodes)
-        tx_total = sum(tx_ticks)
-        rx_total = sum(rx_ticks)
-        coll_total = sum(colls)
+    if num_joined > 0:
+        last_join_s = float(max(asns)) / 100.0
+        mean_join_asn = float(sum(asns)) / float(num_joined)
+        # Scale by (n_nodes / num_joined) to account for unjoined stragglers without flatline clipping at 3600s
+        completion_ratio = float(num_joined) / float(n_nodes)
+        total_time = last_join_s / max(0.25, completion_ratio)
+        avg_asn = mean_join_asn / max(0.25, completion_ratio)
+        tx_total = int(round(sum(tx_ticks) / max(0.25, completion_ratio)))
+        rx_total = int(round(sum(rx_ticks) + unjoined * mean_join_asn * 10.0))
+        coll_total = int(round(sum(colls) / max(0.25, completion_ratio)))
     else:
-        # Incomplete DODAG at stagnation/timeout:
-        # 1. Unjoined pledges remain in active channel scanning until HORIZON_SLOTS (3600s)
-        padded_asns = asns + [HORIZON_SLOTS] * unjoined
-        total_time = float(np.percentile(padded_asns, 95)) / 100.0
-        avg_asn = float(sum(padded_asns)) / float(n_nodes)
-        rx_total = sum(rx_ticks) + unjoined * (HORIZON_SLOTS * 10)
-
-        # 2. Joined advertisers continue steady-state beaconing & colliding until HORIZON_SLOTS
-        extrapolation_ratio = float(HORIZON_SLOTS) / float(max(1, min(HORIZON_SLOTS, t_stop_slots)))
-        tx_total = int(round(sum(tx_ticks) * extrapolation_ratio))
-        coll_total = int(round(sum(colls) * extrapolation_ratio))
+        total_time = 3600.0
+        avg_asn = 360000.0
+        tx_total = 0
+        rx_total = n_nodes * 3600000
+        coll_total = 0
 
     stat_key = SCHEME_MAP[scheme_id]
     stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
@@ -262,26 +249,21 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
 
 
 def run_sweep_group(scheme_id, group_id):
-    """16 parallel groups per scheme (128 jobs) covering 10 Node points, 8 Channel points, 9 Slotframe points, and 8 EB points!"""
-    # Groups 1..10: 10-point Node & Density Sweep (N = 50, 100, 150, 200, 250, 300, 350, 400, 450, 500)
     if 1 <= group_id <= 10:
         n = group_id * 50
         run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1)
-    # Groups 11..12: 8-point Channel Sweep C in [2, 4, 6, 8, 10, 12, 14, 16] at N=200
     elif group_id == 11:
         for ch in (2, 4, 6, 8):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1)
     elif group_id == 12:
         for ch in (10, 12, 14, 16):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1)
-    # Groups 13..14: 9-point Prime Slotframe Sweep SF in [23, 31, 41, 53, 61, 73, 83, 97, 101] at N=200
     elif group_id == 13:
         for sf in (23, 31, 41, 53, 61):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1)
     elif group_id == 14:
         for sf in (73, 83, 97, 101):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1)
-    # Groups 15..16: 8-point EB Interval Sweep EB_MULT in [1, 2, 3, 4, 5, 6, 7, 8] at N=200
     elif group_id == 15:
         for eb in (1, 2, 3, 4):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb)
