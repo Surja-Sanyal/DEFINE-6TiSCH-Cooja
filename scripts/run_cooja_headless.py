@@ -213,11 +213,6 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
     stat_key = SCHEME_MAP[scheme_id]
     stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
 
-    # Skip immediately if this exact parameter tuple is already in Statistics/!
-    if already_computed(stat_file, n_nodes, n_ch, sf_len, eb_mult):
-        print(f"[SKIP - ALREADY DONE] Scheme {scheme_id} ({stat_key.upper()}) | N={n_nodes}, C={n_ch}, SF={sf_len}, EB={eb_mult}")
-        return
-
     coords = load_realdata_coords(n_nodes, area)
     csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}.csc")
     generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult)
