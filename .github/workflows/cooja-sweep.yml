@@ -6,11 +6,14 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   simulate:
     runs-on: ubuntu-latest
     container: contiker/contiki-ng:latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -20,12 +23,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
 
       - name: Cache Gradle Dependencies Across All 128 Jobs
         uses: actions/cache@v4
@@ -40,14 +37,11 @@ jobs:
 
       - name: Run Cooja Headless Simulation Batch
         run: |
-          # 1. If the Docker image already has pre-installed tools/cooja, copy it into our workspace before symlinking
           if [ ! -f "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja/build.gradle" ] && [ -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
-            echo "Copying pre-installed Cooja from Docker image..."
             rm -rf "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
             cp -a /home/user/contiki-ng/tools/cooja "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
           fi
 
-          # 2. Reuse pre-existing Gradle cache from /home/user/.gradle if available
           if [ -d "/home/user/.gradle/caches" ] && [ ! -d "$HOME/.gradle/caches" ]; then
             mkdir -p "$HOME/.gradle"
             cp -rn /home/user/.gradle/* "$HOME/.gradle/" 2>/dev/null || true
@@ -57,7 +51,6 @@ jobs:
           rm -rf /home/user/contiki-ng
           ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
 
-          # 3. Ensure Google Maven Central mirror is present (idempotent check)
           if ! grep -q "maven-central.storage-download.googleapis.com" /home/user/contiki-ng/tools/cooja/build.gradle; then
             sed -i 's/mavenCentral()/maven { url "https:\/\/maven-central.storage-download.googleapis.com\/maven2\/" }\n    mavenCentral()/g' \
               /home/user/contiki-ng/tools/cooja/build.gradle || true
@@ -93,23 +86,37 @@ jobs:
       - name: Merge All Partial Statistics and Plot
         run: |
           python3 -c '
-          import os, glob, shutil
-          shutil.rmtree("Statistics", ignore_errors=True)
+          import os, glob
+
           os.makedirs("Statistics", exist_ok=True)
           merged = {}
 
+          # Load existing Statistics rows first so re-running failed jobs never wipes previously completed rows
+          for existing in sorted(glob.glob("Statistics/*_stats_*.txt")):
+              fname = os.path.basename(existing)
+              with open(existing, "r") as f:
+                  for line in f:
+                      line = line.strip()
+                      if line:
+                          key = tuple(line.split(",")[:5])
+                          merged.setdefault(fname, {})[key] = line
+
+          # Overlay newly downloaded artifact rows (newer rows overwrite older rows with the same 5-tuple parameter key)
           for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_*.txt", recursive=True)):
               fname = os.path.basename(filepath)
               with open(filepath, "r") as f:
-                  lines = [line.strip() for line in f if line.strip()]
-              merged.setdefault(fname, []).extend(lines)
+                  for line in f:
+                      line = line.strip()
+                      if line:
+                          key = tuple(line.split(",")[:5])
+                          merged.setdefault(fname, {})[key] = line
 
-          for fname, lines in merged.items():
-              unique_lines = list(dict.fromkeys(lines))
+          for fname, row_dict in merged.items():
+              sorted_lines = [row_dict[k] for k in sorted(row_dict.keys(), key=lambda x: tuple(float(v) for v in x))]
               out_path = os.path.join("Statistics", fname)
               with open(out_path, "w") as f:
-                  f.write("\n".join(unique_lines) + "\n")
-              print(f"Merged {len(unique_lines)} rows into {out_path}")
+                  f.write("\n".join(sorted_lines) + "\n")
+              print(f"Merged {len(sorted_lines)} unique parameter rows into {out_path}")
           '
 
           if [ -f "scripts/plot_results.py" ]; then
