@@ -1,0 +1,49 @@
+name: Regenerate Plots Only (From Existing Statistics)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/plot_results.py'
+
+permissions:
+  contents: write
+
+jobs:
+  plot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Matplotlib and NumPy
+        run: |
+          pip install --quiet numpy matplotlib
+
+      - name: Run plot_results.py on Existing Statistics
+        run: |
+          python3 scripts/plot_results.py
+
+      - name: Upload Updated Plots Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UPDATED-PLOTS-AND-RESULTS
+          path: |
+            *.png
+            Plots/
+            Results/
+
+      - name: Auto-Commit Updated Plots and PDFs to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A Plots/ Results/
+          find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
+          git diff --staged --quiet || (git commit -m "Auto-regenerate Fig 6 and Figs 9-14 from Statistics via plot-only workflow" && git pull --rebase --autostash origin main && git push origin main)
