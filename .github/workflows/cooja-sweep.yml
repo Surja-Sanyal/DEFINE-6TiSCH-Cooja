@@ -17,8 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [1, 2, 3, 4, 5, 6, 7, 8]
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        scheme: [5, 6, 7, 8, 4, 3, 2, 1]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
     steps:
       - name: Checkout repository
@@ -56,7 +56,7 @@ jobs:
               /home/user/contiki-ng/tools/cooja/build.gradle || true
           fi
 
-          rm -rf Statistics/*
+          # Keep existing Statistics so already_computed() skips completed rows!
           python3 -c "import scripts.run_cooja_headless as r; r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }})"
 
       - name: Upload Statistics Artifact

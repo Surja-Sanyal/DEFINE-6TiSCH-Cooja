@@ -7,7 +7,6 @@ import shutil
 import random
 import subprocess
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
 
 USE_Z1 = False
 
@@ -34,6 +33,26 @@ SCHEME_MAP = {
 
 def compute_constant_density_area(n_nodes, base_nodes=50, base_area=60):
     return min(150, max(50, int(round(base_area * math.sqrt(float(n_nodes) / float(base_nodes))))))
+
+
+def already_computed(stat_file, n_nodes, n_ch, sf_len, eb_mult):
+    """Check if this exact (n_nodes, n_ch, sf_len, eb_mult) row is already recorded in stat_file."""
+    if not os.path.exists(stat_file):
+        return False
+    try:
+        with open(stat_file, "r") as f:
+            for line in f:
+                parts = [p.strip() for p in line.strip().split(",") if p.strip()]
+                if len(parts) >= 10:
+                    if (int(float(parts[0])) == int(n_nodes) and
+                        int(float(parts[2])) == int(n_ch) and
+                        int(float(parts[3])) == int(sf_len) and
+                        int(float(parts[4])) == int(eb_mult) and
+                        float(parts[9]) > 0):
+                        return True
+    except Exception:
+        pass
+    return False
 
 
 def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
@@ -74,7 +93,7 @@ def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
     return coords
 
 
-def generate_csc_file(csc_path, work_exp_dir, coords, scheme_id, sf_len, n_ch, eb_mult, timeout_ms=1800000):
+def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeout_ms=1200000):
     make_vars = f"SYNC_SCHEME={scheme_id} SF_LENGTH={sf_len} NUM_CHANNELS={n_ch} EB_MULT={eb_mult}"
     mote_id_iface = "org.contikios.cooja.contikimote.interfaces.ContikiMoteID"
     motetype_id = "cooja_define"
@@ -82,7 +101,7 @@ def generate_csc_file(csc_path, work_exp_dir, coords, scheme_id, sf_len, n_ch, e
       org.contikios.cooja.contikimote.ContikiMoteType
       <identifier>cooja_define</identifier>
       <description>Cooja DEFINE Mote</description>
-      <source>{work_exp_dir}/node.c</source>
+      <source>{EXP_DIR}/node.c</source>
       <commands>make -j4 node.cooja TARGET=cooja {make_vars}</commands>
       <moteinterface>org.contikios.cooja.interfaces.Position</moteinterface>
       <moteinterface>org.contikios.cooja.interfaces.Battery</moteinterface>
@@ -121,10 +140,10 @@ def generate_csc_file(csc_path, work_exp_dir, coords, scheme_id, sf_len, n_ch, e
     </mote>""")
 
     target_motes = len(coords) - 1
-    near_full = int(target_motes * 0.95)
-    # Fast plateau detection:
-    # 1. If >=95% of nodes joined and 35s pass with no straggler joining -> exit immediately!
-    # 2. If >160s elapsed and 75s pass with zero new joins -> contention plateau reached, exit immediately!
+    near_full = int(target_motes * 0.94)
+    # Fast plateau stop:
+    # - Once >=94% joined, if 25s pass without a straggler joining -> stop!
+    # - Once >90s elapsed, if 45s pass with zero new joins -> plateau reached, stop!
     csc_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <simconf>
   <simulation>
@@ -157,11 +176,11 @@ def generate_csc_file(csc_path, work_exp_dir, coords, scheme_id, sf_len, n_ch, e
         while (joined &lt; target) {{
           YIELD();
           if (msg.equals("CHECK_STAGNATION")) {{
-            if (joined &gt;= near_full &amp;&amp; (time - last_join_time) &gt; 35000000) {{
+            if (joined &gt;= near_full &amp;&amp; (time - last_join_time) &gt; 25000000) {{
               log.log("STAGNATION_STOP at time=" + time + " joined=" + joined + "\\n");
               log.testOK();
             }}
-            if (joined &gt; 0 &amp;&amp; (time - last_join_time) &gt; 75000000 &amp;&amp; time &gt; 160000000) {{
+            if (joined &gt; 0 &amp;&amp; (time - last_join_time) &gt; 45000000 &amp;&amp; time &gt; 90000000) {{
               log.log("STAGNATION_STOP at time=" + time + " joined=" + joined + "\\n");
               log.testOK();
             }}
@@ -189,15 +208,18 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
     if area is None:
         area = compute_constant_density_area(n_nodes)
 
-    # Create an isolated build/run directory per parameter tuple so parallel runs never collide
-    tag = f"s{scheme_id}_n{n_nodes}_c{n_ch}_sf{sf_len}_eb{eb_mult}"
-    work_exp_dir = os.path.join(ROOT_DIR, "experiments", f"work_{tag}")
-    shutil.rmtree(work_exp_dir, ignore_errors=True)
-    shutil.copytree(EXP_DIR, work_exp_dir)
+    stat_key = SCHEME_MAP[scheme_id]
+    stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
+
+    # Skip immediately if this exact parameter tuple is already in Statistics/!
+    if already_computed(stat_file, n_nodes, n_ch, sf_len, eb_mult):
+        print(f"[SKIP - ALREADY DONE] Scheme {scheme_id} ({stat_key.upper()}) | N={n_nodes}, C={n_ch}, SF={sf_len}, EB={eb_mult}")
+        return
 
     coords = load_realdata_coords(n_nodes, area)
-    csc_path = os.path.join(work_exp_dir, f"sim_{tag}.csc")
-    generate_csc_file(csc_path, work_exp_dir, coords, scheme_id, sf_len, n_ch, eb_mult)
+    csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}.csc")
+    generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult)
+    shutil.rmtree(os.path.join(EXP_DIR, "build"), ignore_errors=True)
 
     env = os.environ.copy()
     java17_path = "/usr/lib/jvm/java-17-openjdk-amd64"
@@ -205,33 +227,26 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
         env["JAVA_HOME"] = java17_path
         env["PATH"] = f"{java17_path}/bin:" + env.get("PATH", "")
 
-    # Use Gradle daemon (much faster for sequential/parallel runs in the same container!)
-    cmd = ["./gradlew", "run", f"--args=--no-gui --logdir={work_exp_dir} {csc_path}"]
-    print(f"Executing: {' '.join(cmd)} (Nodes: {n_nodes}, Area: {area}m)")
-    proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
+    testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
+    if os.path.exists(testlog_path):
+        os.remove(testlog_path)
 
-    # Cooja writes COOJA.testlog in --logdir (or COOJA_DIR fallback)
-    testlog_path = os.path.join(work_exp_dir, "COOJA.testlog")
-    if not os.path.exists(testlog_path):
-        testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
+    cmd = ["./gradlew", "run", f"--args=--no-gui {csc_path}"]
+    print(f"Executing: {' '.join(cmd)} (Nodes: {n_nodes}, Area: {area}m, C: {n_ch}, SF: {sf_len}, EB: {eb_mult})")
+    proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
 
     if proc.returncode != 0 and not (os.path.exists(testlog_path) and "CSV_JOIN" in open(testlog_path, errors="ignore").read()):
         for attempt in range(1, 3):
-            print(f"Retrying Cooja run {tag} (attempt {attempt}/2)...")
+            print(f"Retrying Cooja run (attempt {attempt}/2)...")
             time.sleep(attempt * 3)
             proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
-            if os.path.exists(os.path.join(work_exp_dir, "COOJA.testlog")):
-                testlog_path = os.path.join(work_exp_dir, "COOJA.testlog")
+            if proc.returncode == 0 or (os.path.exists(testlog_path) and "CSV_JOIN" in open(testlog_path, errors="ignore").read()):
                 break
 
     log_lines = []
     if os.path.exists(testlog_path):
         with open(testlog_path, "r") as f:
             log_lines = f.readlines()
-
-    # Also scan stdout in case Cooja printed CSV_JOIN directly to stdout
-    if not any("CSV_JOIN" in ln for ln in log_lines) and "CSV_JOIN" in proc.stdout:
-        log_lines = proc.stdout.splitlines()
 
     pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)(?:,coll=(\d+))?")
     asns, tx_ticks, rx_ticks, colls = [], [], [], []
@@ -243,8 +258,6 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
             tx_ticks.append(int(m.group(5)))
             rx_ticks.append(int(m.group(6)))
             colls.append(int(m.group(7)) if m.group(7) else 0)
-
-    shutil.rmtree(work_exp_dir, ignore_errors=True)
 
     num_joined = len(asns)
     unjoined = max(0, n_nodes - num_joined)
@@ -264,8 +277,6 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
         rx_total = n_nodes * 3600000
         coll_total = 0
 
-    stat_key = SCHEME_MAP[scheme_id]
-    stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
     with open(stat_file, "a") as fp:
         row = [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, avg_asn, avg_asn, coll_total, tx_total, rx_total]
         fp.write(",".join(map(str, row)) + ",\n")
@@ -274,24 +285,23 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
 
 
 def run_sweep_group(scheme_id, group_id):
+    """
+    13 fast groups per scheme (104 jobs total).
+    Because already_computed() checks Statistics/*_cooja_stats_.txt, any row already completed is skipped in 0.001s!
+    """
+    # Groups 1..10: 10-point Node & Density Sweep (N = 50..500, C=16, SF=61, EB=1)
     if 1 <= group_id <= 10:
         n = group_id * 50
         run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1)
+    # Group 11: Channel Sweep C in [4, 8, 12, 16] at N=200 (C=16 is auto-skipped if Group 4 is done!)
     elif group_id == 11:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            list(ex.map(lambda ch: run_cooja_and_parse(scheme_id, 200, None, ch, 61, 1), (2, 4, 6, 8)))
+        for ch in (4, 8, 12, 16):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1)
+    # Group 12: Slotframe Sweep SF in [23, 41, 61, 83, 101] at N=200 (SF=61 is auto-skipped if Group 4 is done!)
     elif group_id == 12:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            list(ex.map(lambda ch: run_cooja_and_parse(scheme_id, 200, None, ch, 61, 1), (10, 12, 14, 16)))
+        for sf in (23, 41, 61, 83, 101):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1)
+    # Group 13: EB Interval Sweep EB in [1, 2, 3, 4] at N=200 (EB=1 is auto-skipped if Group 4 is done!)
     elif group_id == 13:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            list(ex.map(lambda sf: run_cooja_and_parse(scheme_id, 200, None, 16, sf, 1), (23, 31, 41, 53, 61)))
-    elif group_id == 14:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            list(ex.map(lambda sf: run_cooja_and_parse(scheme_id, 200, None, 16, sf, 1), (73, 83, 97, 101)))
-    elif group_id == 15:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            list(ex.map(lambda eb: run_cooja_and_parse(scheme_id, 200, None, 16, 61, eb), (1, 2, 3, 4)))
-    elif group_id == 16:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            list(ex.map(lambda eb: run_cooja_and_parse(scheme_id, 200, None, 16, 61, eb), (5, 6, 7, 8)))
+        for eb in (1, 2, 3, 4):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb)
