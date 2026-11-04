@@ -190,6 +190,8 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, timeou
             log.log(msg + "\\n");
             joined++;
             last_join_time = time;
+          }} else if (msg.contains("CSV_ADV")) {{
+            log.log(msg + "\\n");
           }}
         }}
         log.testOK();
@@ -249,15 +251,27 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
             log_lines = f.readlines()
 
     pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)(?:,coll=(\d+))?")
-    asns, tx_ticks, rx_ticks, colls = [], [], [], []
+    adv_pattern = re.compile(r"CSV_ADV,id=(\d+),eb=(\d+),tx=(\d+),coll=(\d+)")
+    asns, rx_ticks = [], []
+    node_tx, node_coll = {}, {}
 
     for line in log_lines:
         m = pattern.search(line)
         if m:
+            nid = int(m.group(1))
             asns.append(int(m.group(2)))
-            tx_ticks.append(int(m.group(5)))
+            node_tx[nid] = int(m.group(5))
             rx_ticks.append(int(m.group(6)))
-            colls.append(int(m.group(7)) if m.group(7) else 0)
+            node_coll[nid] = int(m.group(7)) if m.group(7) else 0
+            continue
+        m_adv = adv_pattern.search(line)
+        if m_adv:
+            nid = int(m_adv.group(1))
+            node_tx[nid] = max(node_tx.get(nid, 0), int(m_adv.group(3)))
+            node_coll[nid] = max(node_coll.get(nid, 0), int(m_adv.group(4)))
+
+    tx_ticks = list(node_tx.values())
+    colls = list(node_coll.values())
 
     num_joined = len(asns)
     unjoined = max(0, n_nodes - num_joined)

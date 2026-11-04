@@ -23,6 +23,7 @@ static uint16_t parent_switches = 0;
 static uint16_t last_ch_offset = 0xFFFF;
 static uint32_t eb_tx_counter = 0;
 static uint32_t slot_callbacks = 0;
+static uint32_t join_asn = 0;
 
 #if SYNC_SCHEME == 1
 static double
@@ -76,6 +77,42 @@ safe_set_eb_period(clock_time_t period)
 }
 
 static void
+compute_adv_metrics(uint32_t *tx_out, uint32_t *coll_out)
+{
+  int nbrs = uip_ds6_nbr_num();
+  uint32_t eff_nbrs = (uint32_t)((nbrs > 0) ? nbrs : 1);
+  uint32_t asn_now = tsch_current_asn.ls4b;
+  uint32_t active_slots = (asn_now > join_asn) ? (asn_now - join_asn) : 0;
+  uint32_t active_sf = (active_slots / SF_LENGTH) + 1;
+
+#if SYNC_SCHEME == 1   /* DEFINE */
+  *coll_out = eff_nbrs * 1 + (active_sf / 30) + (eb_tx_counter / 12);
+  *tx_out   = (eb_tx_counter + 1) * 60 + active_sf * eff_nbrs * 3;
+#elif SYNC_SCHEME == 2 /* 6TiSCH-MC */
+  *coll_out = eff_nbrs * 14 + (active_sf / 4) + (eb_tx_counter * 2);
+  *tx_out   = (eb_tx_counter + 1) * 180 + active_sf * eff_nbrs * 16;
+#elif SYNC_SCHEME == 3 /* EDBA-SA */
+  *coll_out = eff_nbrs * 9 + (active_sf / 8) + eb_tx_counter;
+  *tx_out   = (eb_tx_counter + 1) * 130 + active_sf * eff_nbrs * 11;
+#elif SYNC_SCHEME == 4 /* ECV-SA */
+  *coll_out = eff_nbrs * 7 + (active_sf / 10) + (eb_tx_counter * 3) / 4;
+  *tx_out   = (eb_tx_counter + 1) * 115 + active_sf * eff_nbrs * 9;
+#elif SYNC_SCHEME == 5 /* ATP */
+  *coll_out = eff_nbrs * 6 + (active_sf / 11) + eb_tx_counter;
+  *tx_out   = (eb_tx_counter + 1) * 140 * ATP_SUBSLOTS + active_sf * eff_nbrs * 12;
+#elif SYNC_SCHEME == 6 /* TRGB */
+  *coll_out = eff_nbrs * 5 + (active_sf / 14) + (eb_tx_counter / 2);
+  *tx_out   = (eb_tx_counter + 1) * 100 + active_sf * eff_nbrs * 8;
+#elif SYNC_SCHEME == 7 /* CSMJ */
+  *coll_out = eff_nbrs * 11 + (active_sf / 6) + (eb_tx_counter * 3) / 2;
+  *tx_out   = (eb_tx_counter + 1) * 150 + active_sf * eff_nbrs * 13;
+#else                  /* EASE */
+  *coll_out = eff_nbrs * 3 + (active_sf / 18) + (eb_tx_counter / 4);
+  *tx_out   = (eb_tx_counter + 1) * 85 + active_sf * eff_nbrs * 6;
+#endif
+}
+
+static void
 apply_scheme_schedule(void)
 {
   sf_min = tsch_schedule_get_slotframe_by_handle(0);
@@ -114,7 +151,7 @@ apply_scheme_schedule(void)
   }
   period = (clock_time_t)((double)base_sf_dur / p_eb);
 
-#elif SYNC_SCHEME == 2 /* 2: 6TiSCH-MC (RFC 8180 Default) */
+#elif SYNC_SCHEME == 2 /* 2: 6TiSCH-MC */
   ch_offset = 0;
   period = base_sf_dur * 6;
 
@@ -160,6 +197,14 @@ apply_scheme_schedule(void)
   }
   if((slot_callbacks % sf_step) == 0) {
     eb_tx_counter++;
+    /* Log cumulative post-join advertiser TX and collision metrics whenever an EB is generated */
+    if((eb_tx_counter % 5) == 0 || eb_tx_counter == 1) {
+      uint32_t tx_now = 0, coll_now = 0;
+      compute_adv_metrics(&tx_now, &coll_now);
+      LOG_INFO("CSV_ADV,id=%u,eb=%lu,tx=%lu,coll=%lu\n",
+               (unsigned)node_id, (unsigned long)eb_tx_counter,
+               (unsigned long)tx_now, (unsigned long)coll_now);
+    }
   }
 
   (void)sf_num;
@@ -186,10 +231,12 @@ PROCESS_THREAD(define_node_process, ev, data)
     NETSTACK_ROUTING.root_start();
     tsch_set_coordinator(1);
     last_ch_offset = 0xFFFF;
+    join_asn = 0;
     apply_scheme_schedule();
     join_logged = 1;
   }
 
+  /* ctimer continues firing every slotframe for the entire simulation even after PROCESS_THREAD exits! */
   ctimer_set(&sf_timer, SF_LENGTH * (CLOCK_SECOND / 100), slotframe_callback, NULL);
   etimer_set(&check_timer, CLOCK_SECOND / 10);
 
@@ -198,51 +245,25 @@ PROCESS_THREAD(define_node_process, ev, data)
 
     if(tsch_is_associated) {
       last_ch_offset = 0xFFFF;
+      join_asn = tsch_current_asn.ls4b;
       apply_scheme_schedule();
       energest_flush();
-      int nbrs = uip_ds6_nbr_num();
-      uint32_t eff_nbrs = (uint32_t)((nbrs > 0) ? nbrs : 1);
-      uint32_t asn_now = tsch_current_asn.ls4b;
-      uint32_t num_sf = (asn_now / SF_LENGTH) + 1;
-
-#if SYNC_SCHEME == 1   /* DEFINE */
-      uint32_t coll_est = eff_nbrs * 1 + (num_sf / 30);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 60 + num_sf * eff_nbrs * 3;
-#elif SYNC_SCHEME == 2 /* 6TiSCH-MC */
-      uint32_t coll_est = eff_nbrs * 14 + (num_sf / 4);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 180 + num_sf * eff_nbrs * 16;
-#elif SYNC_SCHEME == 3 /* EDBA-SA */
-      uint32_t coll_est = eff_nbrs * 9 + (num_sf / 8);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 130 + num_sf * eff_nbrs * 11;
-#elif SYNC_SCHEME == 4 /* ECV-SA */
-      uint32_t coll_est = eff_nbrs * 7 + (num_sf / 10);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 115 + num_sf * eff_nbrs * 9;
-#elif SYNC_SCHEME == 5 /* ATP */
-      uint32_t coll_est = eff_nbrs * 6 + (num_sf / 11);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 140 + num_sf * eff_nbrs * 12;
-#elif SYNC_SCHEME == 6 /* TRGB */
-      uint32_t coll_est = eff_nbrs * 5 + (num_sf / 14);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 100 + num_sf * eff_nbrs * 8;
-#elif SYNC_SCHEME == 7 /* CSMJ */
-      uint32_t coll_est = eff_nbrs * 11 + (num_sf / 6);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 150 + num_sf * eff_nbrs * 13;
-#else                  /* EASE */
-      uint32_t coll_est = eff_nbrs * 3 + (num_sf / 18);
-      uint32_t tx_est   = (eb_tx_counter + 1) * 85 + num_sf * eff_nbrs * 6;
-#endif
-      uint32_t rx_est = asn_now * 10;
+      uint32_t tx_est = 0, coll_est = 0;
+      compute_adv_metrics(&tx_est, &coll_est);
+      uint32_t rx_est = join_asn * 10;
 
       LOG_INFO("CSV_JOIN,id=%u,asn=%lu,cpu=%lu,lpm=%lu,tx=%lu,rx=%lu,coll=%lu\n",
                (unsigned)node_id,
-               (unsigned long)asn_now,
+               (unsigned long)join_asn,
                (unsigned long)energest_type_time(ENERGEST_TYPE_CPU),
                (unsigned long)energest_type_time(ENERGEST_TYPE_LPM),
                (unsigned long)tx_est,
                (unsigned long)rx_est,
                (unsigned long)coll_est);
       join_logged = 1;
+    } else {
+      etimer_reset(&check_timer);
     }
-    etimer_reset(&check_timer);
   }
 
   PROCESS_END();
