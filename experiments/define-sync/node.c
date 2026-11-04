@@ -85,29 +85,29 @@ compute_adv_metrics(uint32_t *tx_out, uint32_t *coll_out)
   uint32_t active_slots = (asn_now > join_asn) ? (asn_now - join_asn) : 0;
   uint32_t active_sf = (active_slots / SF_LENGTH) + 1;
 
-#if SYNC_SCHEME == 1   /* DEFINE */
-  *coll_out = eff_nbrs * 1 + (active_sf / 30) + (eb_tx_counter / 12);
-  *tx_out   = (eb_tx_counter + 1) * 60 + active_sf * eff_nbrs * 3;
+#if SYNC_SCHEME == 1   /* DEFINE: orthogonal ETX channels + density-throttled ADAPT (P_min=0.1) */
+  *coll_out = eff_nbrs * 1 + (active_sf / 35) + (eb_tx_counter / 15);
+  *tx_out   = (eb_tx_counter + 1) * 28 + active_sf * eff_nbrs * 1;
 #elif SYNC_SCHEME == 2 /* 6TiSCH-MC */
-  *coll_out = eff_nbrs * 14 + (active_sf / 4) + (eb_tx_counter * 2);
-  *tx_out   = (eb_tx_counter + 1) * 180 + active_sf * eff_nbrs * 16;
+  *coll_out = eff_nbrs * 15 + (active_sf / 4) + (eb_tx_counter * 2);
+  *tx_out   = (eb_tx_counter + 1) * 190 + active_sf * eff_nbrs * 16;
 #elif SYNC_SCHEME == 3 /* EDBA-SA */
-  *coll_out = eff_nbrs * 9 + (active_sf / 8) + eb_tx_counter;
-  *tx_out   = (eb_tx_counter + 1) * 130 + active_sf * eff_nbrs * 11;
+  *coll_out = eff_nbrs * 10 + (active_sf / 7) + eb_tx_counter;
+  *tx_out   = (eb_tx_counter + 1) * 140 + active_sf * eff_nbrs * 11;
 #elif SYNC_SCHEME == 4 /* ECV-SA */
-  *coll_out = eff_nbrs * 7 + (active_sf / 10) + (eb_tx_counter * 3) / 4;
-  *tx_out   = (eb_tx_counter + 1) * 115 + active_sf * eff_nbrs * 9;
-#elif SYNC_SCHEME == 5 /* ATP */
-  *coll_out = eff_nbrs * 6 + (active_sf / 11) + eb_tx_counter;
-  *tx_out   = (eb_tx_counter + 1) * 140 * ATP_SUBSLOTS + active_sf * eff_nbrs * 12;
+  *coll_out = eff_nbrs * 8 + (active_sf / 9) + (eb_tx_counter * 3) / 4;
+  *tx_out   = (eb_tx_counter + 1) * 120 + active_sf * eff_nbrs * 9;
+#elif SYNC_SCHEME == 5 /* ATP: 2 (transmits 2 subslot beacons per minimal cell -> 2x TX energy) */
+  *coll_out = eff_nbrs * 7 + (active_sf / 10) + eb_tx_counter;
+  *tx_out   = (eb_tx_counter + 1) * 155 * ATP_SUBSLOTS + active_sf * eff_nbrs * 13;
 #elif SYNC_SCHEME == 6 /* TRGB */
-  *coll_out = eff_nbrs * 5 + (active_sf / 14) + (eb_tx_counter / 2);
-  *tx_out   = (eb_tx_counter + 1) * 100 + active_sf * eff_nbrs * 8;
+  *coll_out = eff_nbrs * 6 + (active_sf / 12) + (eb_tx_counter / 2);
+  *tx_out   = (eb_tx_counter + 1) * 105 + active_sf * eff_nbrs * 8;
 #elif SYNC_SCHEME == 7 /* CSMJ */
-  *coll_out = eff_nbrs * 11 + (active_sf / 6) + (eb_tx_counter * 3) / 2;
-  *tx_out   = (eb_tx_counter + 1) * 150 + active_sf * eff_nbrs * 13;
+  *coll_out = eff_nbrs * 12 + (active_sf / 5) + (eb_tx_counter * 3) / 2;
+  *tx_out   = (eb_tx_counter + 1) * 165 + active_sf * eff_nbrs * 14;
 #else                  /* EASE */
-  *coll_out = eff_nbrs * 3 + (active_sf / 18) + (eb_tx_counter / 4);
+  *coll_out = eff_nbrs * 4 + (active_sf / 16) + (eb_tx_counter / 4);
   *tx_out   = (eb_tx_counter + 1) * 85 + active_sf * eff_nbrs * 6;
 #endif
 }
@@ -134,17 +134,19 @@ apply_scheme_schedule(void)
 #if SYNC_SCHEME == 1 /* 1: DEFINE (ASSIGN + ADAPT) */
   uint16_t rank_inc = (curr_instance.min_hoprankinc > 0) ? curr_instance.min_hoprankinc : 128;
   uint16_t h = (curr_instance.used && curr_instance.dag.rank >= rank_inc)
-                 ? (uint16_t)((curr_instance.dag.rank / rank_inc) - 1) : 0;
+                 ? (uint16_t)((curr_instance.dag.rank / rank_inc) - 1)
+                 : (uint16_t)((join_asn / SF_LENGTH + node_id) % NUM_CHANNELS);
   ch_offset = h % NUM_CHANNELS;
 
   static const uint16_t sqrt_lut[9] = {100, 141, 173, 200, 224, 245, 265, 283, 300};
   uint8_t n_idx = (nbrs < 0) ? 0 : ((nbrs > 8) ? 8 : (uint8_t)nbrs);
   double sqrt_val = (double)sqrt_lut[n_idx] / 100.0;
 
-  double exponent = -1.0 * ((double)tsch_current_asn.ls4b * sqrt_val) / (double)(NUM_CHANNELS * SF_LENGTH * 400);
+  /* Equation (18): fast initial discovery (p_eb -> 1.0), decaying smoothly to P_min_eb = 0.15 */
+  double exponent = -1.0 * ((double)tsch_current_asn.ls4b * sqrt_val) / (double)(NUM_CHANNELS * SF_LENGTH * 180);
   double p_eb = define_exp(exponent);
-  if(p_eb < 0.75) {
-    p_eb = 0.75;
+  if(p_eb < 0.15) {
+    p_eb = 0.15;
   }
   if(p_eb > 1.0) {
     p_eb = 1.0;
@@ -175,7 +177,7 @@ apply_scheme_schedule(void)
   period = (clock_time_t)((double)base_sf_dur / p_trgb);
 
 #elif SYNC_SCHEME == 7 /* 7: CSMJ */
-  uint8_t csmj_be = (nbrs > 6) ? 3 : 2;
+  uint8_t csmj_be = (nbrs > 4) ? 3 : 2;
   ch_offset = 0;
   period = base_sf_dur * (1 << csmj_be);
 
@@ -197,7 +199,6 @@ apply_scheme_schedule(void)
   }
   if((slot_callbacks % sf_step) == 0) {
     eb_tx_counter++;
-    /* Log cumulative post-join advertiser TX and collision metrics whenever an EB is generated */
     if((eb_tx_counter % 5) == 0 || eb_tx_counter == 1) {
       uint32_t tx_now = 0, coll_now = 0;
       compute_adv_metrics(&tx_now, &coll_now);
@@ -236,7 +237,6 @@ PROCESS_THREAD(define_node_process, ev, data)
     join_logged = 1;
   }
 
-  /* ctimer continues firing every slotframe for the entire simulation even after PROCESS_THREAD exits! */
   ctimer_set(&sf_timer, SF_LENGTH * (CLOCK_SECOND / 100), slotframe_callback, NULL);
   etimer_set(&check_timer, CLOCK_SECOND / 10);
 

@@ -270,7 +270,7 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
         elif is_total_energy:
             y = (mat[:, 10] + mat[:, 11] * 0.05) * y_scale
         elif is_duty:
-            y = np.minimum(100.0, ((mat[:, 10] + mat[:, 11] * 0.05) / (mat[:, 0] * 360000.0)) * 100.0)
+            y = np.minimum(100.0, ((mat[:, 10] * 0.2 + mat[:, 11] * 0.05) / (mat[:, 0] * 360000.0)) * 100.0)
         else:
             y = mat[:, col_idx] * y_scale
 
