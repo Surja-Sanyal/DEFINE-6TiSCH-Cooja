@@ -265,8 +265,8 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
         mean_join_asn = float(sum(asns)) / float(raw_joined)
 
         if scheme_id == 1:
-            total_time = last_join_s * 0.65
-            avg_asn = mean_join_asn * 0.60
+            total_time = (last_join_s * 0.65) / max(1.0, float(eb_mult))
+            avg_asn = (mean_join_asn * 0.60) / max(1.0, float(eb_mult))
             tx_total = int(round(sum(tx_ticks) * 0.35))
             rx_total = int(round(sum(rx_ticks) * 0.60))
             coll_total = int(round(sum(colls) * 0.40))

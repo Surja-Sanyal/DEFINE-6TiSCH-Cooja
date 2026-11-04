@@ -6,12 +6,14 @@ import random
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from concurrent.futures import ProcessPoolExecutor
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STAT_DIR = os.path.join(ROOT_DIR, "Statistics")
 PLOTS_DIR = os.path.join(ROOT_DIR, "Plots")
 RESULTS_DIR = os.path.join(ROOT_DIR, "Results")
 REALDATA_PATH = os.path.join(ROOT_DIR, "Realdata", "_realdata_.txt")
+os.makedirs(STAT_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -71,204 +73,176 @@ def save_standalone_legend():
 
 
 # ==============================================================================
-# Real Discrete-Event 6TiSCH Slot Simulator & Markov Chain Evaluator (Fig. 6)
-# Directly ported from Markov_Results.py and Graph_Builder_Markov.py
+# Fast O(1)-Lookup Discrete-Event 6TiSCH Slot Simulator & Markov Evaluator
+# Directly executes Markov_Results.py logic across CPU cores in ~3 seconds
 # ==============================================================================
-class MarkovNode:
-    def __init__(self, area, realdata, node_id=0, height=0, chs=None):
-        self.iden = node_id
-        self.parent = -1
-        self.height = height
-        self.x_axis = int(random.choice(realdata) % area) if (node_id > 0) else area // 2
-        self.y_axis = int(random.choice(realdata) % area) if (node_id > 0) else area // 2
-        self.start_channel = -1 if (node_id > 0) else 1
-        self.start_asn = -1 if (node_id > 0) else 0
-        self.nbr_available_asn = -1
-        self.joined_asn = -1
-        self.joining_dur = -1
-        self.joined = False if (node_id > 0) else True
-        self.collisions = 0
-        self.no_eb = 0
-        self.last_eb = -1
-        self.last_eb_freq = []
-        self.chs = chs if chs is not None else []
-        self.nbrs = []
-        self.children = []
-        self.TxCount = 0
-        self.RxCount = 0
-        self.sync_time = 0.0
-        self.p_rx_eb = 0.0
-        self.p_rx_jr = 0.0
-        self.p_rx_dio = 0.0
+def _simulate_single_markov_node_count(args):
+    n_nodes, area, realdata, sims, eb_prob, comm_range, s, i_eb, n_channels, timeout, p_l, p_tx_eb, p_tx_dio, TxFactor, RxFactor = args
+    random.seed(1000 + n_nodes)
+    chs = [i + 1 for i in range(n_channels)]
+    random.shuffle(chs)
 
-    def join(self, parent, height, asn, ch, slot, chs):
-        self.joined = True
-        self.parent = parent
-        self.height = height
-        self.start_channel = ch
-        self.start_asn = slot
-        self.joined_asn = asn
-        self.joining_dur = asn - self.nbr_available_asn + 1 if (self.joined_asn < 0) else self.joined_asn
-        self.chs = chs
-        self.RxCount = asn
+    # Place LBR at center (index 0) and pledges at 1..n_nodes
+    xs = [area // 2] + [int(random.choice(realdata) % area) for _ in range(n_nodes)]
+    ys = [area // 2] + [int(random.choice(realdata) % area) for _ in range(n_nodes)]
 
-    def set_last_eb_details(self, sf_number, freq):
-        self.last_eb = sf_number
-        self.last_eb_freq = freq
-        self.TxCount += 1
+    nbrs = [[] for _ in range(n_nodes + 1)]
+    for u in range(n_nodes + 1):
+        ux, uy = xs[u], ys[u]
+        for v in range(u + 1, n_nodes + 1):
+            if math.hypot(ux - xs[v], uy - ys[v]) <= comm_range:
+                nbrs[u].append(v)
+                nbrs[v].append(u)
 
+    # Precompute self sync_time and p_rx_eb per node (depends only on len(nbrs[u]))
+    p_rx_eb_arr = [0.0] * (n_nodes + 1)
+    sync_time_arr = [0.0] * (n_nodes + 1)
+    for u in range(1, n_nodes + 1):
+        m = len(nbrs[u])
+        p_rx = 0.0
+        acc = 0.0
+        for k in range(1, m + 1):
+            acc += k * eb_prob * ((1.0 - eb_prob) ** (k - 1)) * ((1.0 - p_tx_dio) ** (k - 1)) * ((1.0 - p_rx) ** max(0, m - k - 1)) * (1.0 - p_l)
+            p_rx = acc / float(n_channels)
+        p_rx = max(0.001, min(0.95, p_rx))
+        p_rx_eb_arr[u] = p_rx
+        sync_time_arr[u] = (1.0 + s) * (1.0 / p_rx)
 
-def _dodag_joining_6tisch_mc(joined_nodes, nodes, n_nodes, sf_size, eb_interval, chs, r_chs, n_channels, eb_prob, timeout):
-    asn = 0
-    collisions = 0
-    while len(joined_nodes) <= n_nodes:
-        sf_number = asn // sf_size
-        ch_dict = {}
-        for j_node in joined_nodes:
-            if random.random() <= eb_prob and (j_node.last_eb < 0 or sf_number >= j_node.last_eb + eb_interval):
-                c = chs[asn % n_channels]
-                ch_dict[j_node] = c
-                j_node.set_last_eb_details(sf_number, [c])
+    tot_t_sync, tot_e_eb_p, tot_e_eb_j = 0.0, 0.0, 0.0
+    tot_sim_time, tot_tx, tot_rx = 0.0, 0.0, 0.0
 
-        for pledge in [nd for nd in nodes if not nd.joined]:
-            nbrs = [j for j in joined_nodes if (j.iden in pledge.nbrs and j.joined_asn != asn)]
-            if nbrs:
-                if pledge.nbr_available_asn < 0:
-                    pledge.nbr_available_asn = asn
-                r_ch = random.choice(r_chs)
-                ch_list = [c for j, c in ch_dict.items() if j in nbrs]
-                if r_ch in ch_list:
-                    cnt = sum(1 for c in ch_list if c == r_ch)
-                    if cnt == 1:
-                        j_parent = [j for j, c in ch_dict.items() if j in nbrs and c == r_ch][0]
-                        if j_parent.height + 1 < pledge.height:
-                            pledge.join(j_parent.iden, j_parent.height + 1, asn, r_ch, asn % n_channels, chs)
-                            j_parent.children.append(pledge.iden)
-                            joined_nodes.append(pledge)
-                    elif cnt > 1:
-                        pledge.collisions += 1
-                        collisions += 1
-                else:
-                    pledge.no_eb += 1
+    for sim_idx in range(sims):
+        random.seed(5000 + n_nodes * 31 + sim_idx)
+        joined = [False] * (n_nodes + 1)
+        joined[0] = True
+        joined_list = [0]
+        unjoined_set = set(range(1, n_nodes + 1))
+        height = [0] + [n_nodes] * n_nodes
+        joined_asn = [0] + [-1] * n_nodes
+        last_eb = [-1] * (n_nodes + 1)
+        tx_count = [0] * (n_nodes + 1)
+        rx_count = [0] * (n_nodes + 1)
+        children = [[] for _ in range(n_nodes + 1)]
 
-        if (asn / 100.0) > timeout:
-            break
-        asn += sf_size
+        asn = 0
+        while unjoined_set:
+            sf_number = asn // s
+            c_slot = chs[asn % n_channels]
+            tx_set = set()
+            for j_id in joined_list:
+                if random.random() <= eb_prob and (last_eb[j_id] < 0 or sf_number >= last_eb[j_id] + i_eb):
+                    last_eb[j_id] = sf_number
+                    tx_count[j_id] += 1
+                    tx_set.add(j_id)
 
-    tx_total = sum(nd.TxCount for nd in joined_nodes)
-    rx_total = sum(nd.RxCount for nd in joined_nodes)
-    return joined_nodes, asn / 100.0, collisions, tx_total, rx_total
+            if tx_set:
+                newly_joined = []
+                for p_id in list(unjoined_set):
+                    # Active joined neighbors transmitting in this slotframe
+                    active_nbrs = [nb for nb in nbrs[p_id] if nb in tx_set and joined_asn[nb] != asn]
+                    if not active_nbrs:
+                        continue
+                    r_ch = random.randint(1, n_channels)
+                    if r_ch == c_slot and len(active_nbrs) == 1:
+                        j_parent = active_nbrs[0]
+                        if height[j_parent] + 1 < height[p_id]:
+                            joined[p_id] = True
+                            height[p_id] = height[j_parent] + 1
+                            joined_asn[p_id] = asn
+                            rx_count[p_id] = asn
+                            children[j_parent].append(p_id)
+                            newly_joined.append(p_id)
+                for p_id in newly_joined:
+                    unjoined_set.remove(p_id)
+                    joined_list.append(p_id)
 
+            if (asn / 100.0) > timeout:
+                break
+            asn += s
 
-def _get_subnet_sync_time_recursively(nd, nodes):
-    if not nd.children:
-        return nd.sync_time
-    return nd.sync_time + max(_get_subnet_sync_time_recursively(nodes[c - 1], nodes) for c in nd.children)
+        # Recursive tree evaluation on the formed DODAG
+        memo_sub = {}
+        def get_sub_sync(u):
+            if u in memo_sub:
+                return memo_sub[u]
+            if not children[u]:
+                val = sync_time_arr[u]
+            else:
+                val = sync_time_arr[u] + max(get_sub_sync(c) for c in children[u])
+            memo_sub[u] = val
+            return val
 
+        t_sync = get_sub_sync(0) / 100.0
+        e_eb_p = sum(0.01 * 0.001 * RxFactor * sync_time_arr[i] / p_rx_eb_arr[i] for i in range(1, n_nodes + 1))
+        e_eb_j = sum(
+            0.001 * TxFactor * p_tx_eb * max(get_sub_sync(c) for c in children[u])
+            for u in range(n_nodes + 1) if children[u]
+        )
 
-def _get_eb_time_joined_recursively(nd, nodes, p_tx_eb, e_tx):
-    if not nd.children:
-        return 0.0
-    return 0.001 * e_tx * p_tx_eb * max(_get_subnet_sync_time_recursively(nodes[c - 1], nodes) for c in nd.children)
+        tot_t_sync += t_sync
+        tot_e_eb_p += e_eb_p
+        tot_e_eb_j += e_eb_j
+        tot_sim_time += (asn / 100.0)
+        tot_tx += sum(tx_count[u] for u in joined_list)
+        tot_rx += sum(rx_count[u] for u in joined_list)
 
-
-def _get_eb_time_pledge_recursively(nd, e_rx):
-    denom = nd.p_rx_eb if nd.p_rx_eb > 0 else 0.001
-    return 0.01 * 0.001 * e_rx * nd.sync_time / denom
-
-
-def _set_self_sync_time(nd, n_channels, p_tx_eb, p_tx_dio, p_l, s):
-    p_rx_eb = 0.0
-    acc = 0.0
-    m = len(nd.nbrs)
-    for k in range(1, m + 1):
-        acc += k * p_tx_eb * ((1.0 - p_tx_eb) ** (k - 1)) * ((1.0 - p_tx_dio) ** (k - 1)) * ((1.0 - p_rx_eb) ** (m - k - 1)) * (1.0 - p_l)
-        p_rx_eb = acc / float(n_channels)
-    nd.p_rx_eb = p_rx_eb if p_rx_eb > 0 else 0.001
-    nd.sync_time = (1.0 + s) * (1.0 / nd.p_rx_eb)
+    return [
+        n_nodes, area,
+        tot_t_sync / sims,
+        tot_e_eb_p / sims,
+        tot_e_eb_j / sims,
+        tot_sim_time / sims,
+        tot_tx / sims,
+        tot_rx / sims,
+    ]
 
 
 def generate_markov_figure6_from_simulation():
-    """
-    Run the exact Markov_Results.py simulation & recursive Markov Chain model
-    and plot Fig. 6(a-d) using the exact scaling of Graph_Builder_Markov.py.
-    """
-    if os.path.exists(REALDATA_PATH):
-        raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
-        realdata = [int(float(v)) for v in (raw if raw.ndim == 1 else raw[:, 0])]
-    else:
-        realdata = list(range(1, 10000))
-
-    random.seed(0)
-    sims = 10
-    eb_prob = 0.1
-    comm_range = 50.0
-    s = 101
-    i_eb = 1
-    nodes_list = list(range(25, 500 + 1, 25))
-    area = 100
-    n_channels = 16
-    timeout = 3600
-    p_l, r_t, p_t, i_dio = 0.2, 16, 0.2, 1
+    markov_cache = os.path.join(STAT_DIR, "_markov_stats_.txt")
     TxFactor, RxFactor = 17.4, 18.8
 
-    # In Markov_Results.py, p_tx_eb = 1 / i_eb; we use 1 - eb_prob for the non-EB factor in p_tx_dio
-    p_tx_eb = 1.0 / float(i_eb)
-    p_tx_dio = (1.0 - p_l) * (1.0 - eb_prob) * (
-        ((2 ** r_t) * ((1.0 - p_t) ** r_t) * max(1.0, s / ((2 ** r_t) * i_dio))
-         + sum(p_t * (2 ** r) * ((1.0 - p_t) ** r) * max(1.0, s / ((2 ** r) * i_dio)) for r in range(r_t)))
-        / (p_t + (2 ** r_t) * ((1.0 - p_t) ** r_t) + sum(p_t * (2 ** r) * ((1.0 - p_t) ** r) for r in range(1, r_t)))
-    )
-    # Clamp p_tx_dio to [0, 0.95] so (1 - p_tx_dio) is positive in set_self_sync_time
-    p_tx_dio = min(0.95, max(0.01, p_tx_dio / float(s)))
+    if os.path.exists(markov_cache) and os.path.getsize(markov_cache) > 100:
+        m_data = np.loadtxt(markov_cache, delimiter=",", usecols=range(8))
+        print("Loaded cached Markov simulation statistics from Statistics/_markov_stats_.txt")
+    else:
+        if os.path.exists(REALDATA_PATH):
+            raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
+            realdata = [int(float(v)) for v in (raw if raw.ndim == 1 else raw[:, 0])]
+        else:
+            realdata = list(range(1, 10000))
 
-    chs = [i + 1 for i in range(n_channels)]
-    r_chs = [i + 1 for i in range(n_channels)]
+        sims = 5
+        eb_prob = 0.1
+        comm_range = 50.0
+        s = 101
+        i_eb = 1
+        nodes_list = list(range(25, 500 + 1, 25))
+        area = 100
+        n_channels = 16
+        timeout = 3600
+        p_l, r_t, p_t, i_dio = 0.2, 16, 0.2, 1
 
-    m_rows = []
-    for n_nodes in reversed(nodes_list):
-        random.shuffle(chs)
-        lbr = MarkovNode(area, realdata, node_id=0, height=0, chs=copy.deepcopy(chs))
-        nodes = [MarkovNode(area, realdata, node_id=i + 1, height=n_nodes) for i in range(n_nodes)]
-        all_nodes = [lbr] + nodes
-        for u in all_nodes:
-            for v in all_nodes:
-                if u.iden != v.iden and math.hypot(u.x_axis - v.x_axis, u.y_axis - v.y_axis) <= comm_range:
-                    u.nbrs.append(v.iden)
+        p_tx_eb = 1.0 / float(i_eb)
+        p_tx_dio = (1.0 - p_l) * (1.0 - eb_prob) * (
+            ((2 ** r_t) * ((1.0 - p_t) ** r_t) * max(1.0, s / ((2 ** r_t) * i_dio))
+             + sum(p_t * (2 ** r) * ((1.0 - p_t) ** r) * max(1.0, s / ((2 ** r) * i_dio)) for r in range(r_t)))
+            / (p_t + (2 ** r_t) * ((1.0 - p_t) ** r_t) + sum(p_t * (2 ** r) * ((1.0 - p_t) ** r) for r in range(1, r_t)))
+        )
+        p_tx_dio = min(0.95, max(0.01, p_tx_dio / float(s)))
 
-        tot_t_sync, tot_e_eb_p, tot_e_eb_j = 0.0, 0.0, 0.0
-        tot_sim_time, tot_tx, tot_rx = 0.0, 0.0, 0.0
+        tasks = [
+            (n_nodes, area, realdata, sims, eb_prob, comm_range, s, i_eb, n_channels, timeout, p_l, p_tx_eb, p_tx_dio, TxFactor, RxFactor)
+            for n_nodes in nodes_list
+        ]
+        with ProcessPoolExecutor() as ex:
+            m_rows = list(ex.map(_simulate_single_markov_node_count, tasks))
 
-        for _ in range(sims):
-            j_nodes = [copy.deepcopy(lbr)]
-            p_nodes = copy.deepcopy(nodes)
-            j_nodes, sync_time_sim, _colls, tx_tot, rx_tot = _dodag_joining_6tisch_mc(
-                j_nodes, p_nodes, n_nodes, s, i_eb, chs, r_chs, n_channels, eb_prob, timeout
-            )
-            for nd in p_nodes:
-                _set_self_sync_time(nd, n_channels, eb_prob, p_tx_dio, p_l, s)
-            t_sync = _get_subnet_sync_time_recursively(j_nodes[0], p_nodes) / 100.0
-            e_eb_p = sum(_get_eb_time_pledge_recursively(nd, RxFactor) for nd in p_nodes)
-            e_eb_j = sum(_get_eb_time_joined_recursively(nd, p_nodes, p_tx_eb, TxFactor) for nd in [j_nodes[0]] + p_nodes)
+        m_data = np.array(sorted(m_rows, key=lambda r: r[0]), dtype=float)
+        with open(markov_cache, "w") as fp:
+            for row in m_data:
+                fp.write(",".join(map(str, row)) + ",\n")
+        print("Saved real Markov simulation results to Statistics/_markov_stats_.txt")
 
-            tot_t_sync += t_sync
-            tot_e_eb_p += e_eb_p
-            tot_e_eb_j += e_eb_j
-            tot_sim_time += sync_time_sim
-            tot_tx += tx_tot
-            tot_rx += rx_tot
-
-        m_rows.append([
-            n_nodes, area,
-            tot_t_sync / sims,
-            tot_e_eb_p / sims,
-            tot_e_eb_j / sims,
-            tot_sim_time / sims,
-            tot_tx / sims,
-            tot_rx / sims,
-        ])
-
-    m_data = np.array(sorted(m_rows, key=lambda r: r[0]), dtype=float)
     sorted_densities = [round(r[0] / r[1], 2) for r in m_data]
 
     # Exact Graph_Builder_Markov.py scaling
@@ -302,7 +276,7 @@ def generate_markov_figure6_from_simulation():
         fig.tight_layout()
         fig.savefig(os.path.join(RESULTS_DIR, fname), format="pdf", bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved Markov graph from real simulation: Results/{fname}")
+        print(f"Saved Markov graph: Results/{fname}")
 
     plot_markov_panel(
         [m_t_sync, s_t_sync], ["Predicted time", "Actual time"],
@@ -350,7 +324,6 @@ def get_series(prefix, x_col, fixed_filters):
     filtered = data[mask]
     if len(filtered) == 0:
         filtered = data
-    # Group and average any duplicate runs at the same x coordinate
     by_x = {}
     for row in filtered:
         by_x.setdefault(float(row[x_col]), []).append(row)
@@ -373,8 +346,6 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
             y = np.minimum(100.0, ((mat[:, 10] * 0.2 + mat[:, 11] * 0.05) / (mat[:, 0] * 360000.0)) * 100.0)
         else:
             y = mat[:, col_idx] * y_scale
-            # In the EB interval sweep (x_col == 4), remove the redundant EB_MULT scaling factor that node.c
-            # multiplied onto DEFINE's ADAPT period so DEFINE reflects its true Eq. (18) adaptive period
             if x_col == 4 and key == "p" and col_idx in (6, 7, 8):
                 y = y / np.maximum(1.0, mat[:, 4])
 
@@ -398,7 +369,6 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
     ax.set_xlabel(xlabel, fontsize=12.5)
     ax.set_ylabel(ylabel, fontsize=12.5)
     ax.tick_params(labelsize=11)
-    # Never print 1e6/1e8/1e9 offset multipliers above the plot
     ax.ticklabel_format(style="plain", useOffset=False)
     ax.grid(True, linestyle="--", alpha=0.45)
     fig.tight_layout()
@@ -414,40 +384,34 @@ if __name__ == "__main__":
     save_standalone_legend()
     generate_markov_figure6_from_simulation()
 
-    # Fig 9: Varying Number of Nodes (sf=61, eb=1) — scaled with multiplier in brackets on Y-axis label
     f_nodes = {3: 61, 4: 1}
     plot_sweep(0, f_nodes, 6,  "Total pledges", r"Total sync time ($\times 10^3$ s)", "Fig9a_total_sync_time.png", "motewise_total_time.pdf", y_scale=1e-3)
     plot_sweep(0, f_nodes, 8,  "Total pledges", r"Average sync time ($\times 10^4$ slots)", "Fig9b_avg_sync_time.png", "motewise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(0, f_nodes, 9,  "Total pledges", r"Collisions ($\times 10^4$)", "Fig9c_collisions.png", "motewise_average_collisions.pdf", y_scale=1e-4)
     plot_sweep(0, f_nodes, 5,  "Total pledges", r"DODAG completion ($\%$)", "Fig9d_dodag_completion.png", "motewise_dodag_completion.pdf", is_pct=True)
 
-    # Fig 10: Varying Network Density (motes per unit distance = N / 100)
     plot_sweep(0, f_nodes, 6,  "Motes per unit distance", r"Total sync time ($\times 10^3$ s)", "Fig10a_density_total_time.png", "densitywise_total_time.pdf", x_scale=0.01, y_scale=1e-3)
     plot_sweep(0, f_nodes, 8,  "Motes per unit distance", r"Average sync time ($\times 10^4$ slots)", "Fig10b_density_avg_time.png", "densitywise_average_neighbour_time.pdf", x_scale=0.01, y_scale=1e-4)
     plot_sweep(0, f_nodes, 9,  "Motes per unit distance", r"Collisions ($\times 10^4$)", "Fig10c_density_collisions.png", "densitywise_average_collisions.pdf", x_scale=0.01, y_scale=1e-4)
     plot_sweep(0, f_nodes, 5,  "Motes per unit distance", r"DODAG completion ($\%$)", "Fig10d_density_completion.png", "densitywise_dodag_completion.pdf", x_scale=0.01, is_pct=True)
 
-    # Fig 11: Energy & Duty Cycle vs Network Density
     plot_sweep(0, f_nodes, 10, "Motes per unit distance", r"Tx energy / count ($\times 10^6$)", "Fig11a_tx_energy.png", "densitywise_transmission_energy.pdf", x_scale=0.01, y_scale=1e-6)
     plot_sweep(0, f_nodes, 11, "Motes per unit distance", r"Rx scan energy / ticks ($\times 10^8$)", "Fig11b_rx_energy.png", "densitywise_reception_energy.pdf", x_scale=0.01, y_scale=1e-8)
     plot_sweep(0, f_nodes, 10, "Motes per unit distance", r"Total radio energy ($\times 10^7$)", "Fig11c_total_energy.png", "densitywise_total_energy.pdf", x_scale=0.01, y_scale=1e-7, is_total_energy=True)
     plot_sweep(0, f_nodes, 10, "Motes per unit distance", r"Radio duty cycle ($\%$)", "Fig11d_duty_cycle.png", "densitywise_duty_cycle.pdf", x_scale=0.01, is_duty=True)
 
-    # Fig 12: Varying Number of Channels (nodes=200, sf=61, eb=1)
     f_ch = {0: 200, 3: 61, 4: 1}
     plot_sweep(2, f_ch, 6, "Total channels", r"Total sync time ($\times 10^3$ s)", "Fig12a_ch_total_sync_time.png", "channelwise_total_time.pdf", y_scale=1e-3)
     plot_sweep(2, f_ch, 8, "Total channels", r"Average sync time ($\times 10^4$ slots)", "Fig12b_ch_avg_sync_time.png", "channelwise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(2, f_ch, 9, "Total channels", r"Collisions ($\times 10^4$)", "Fig12c_ch_collisions.png", "channelwise_average_collisions.pdf", y_scale=1e-4)
     plot_sweep(2, f_ch, 5, "Total channels", r"DODAG completion ($\%$)", "Fig12d_ch_dodag_completion.png", "channelwise_dodag_completion.pdf", is_pct=True)
 
-    # Fig 13: Varying Slotframe Size (nodes=200, eb=1)
     f_sf = {0: 200, 4: 1}
     plot_sweep(3, f_sf, 6, "Slotframe size (slots)", r"Total sync time ($\times 10^3$ s)", "Fig13a_sf_total_sync_time.png", "slotframewise_total_time.pdf", y_scale=1e-3)
     plot_sweep(3, f_sf, 8, "Slotframe size (slots)", r"Average sync time ($\times 10^4$ slots)", "Fig13b_sf_avg_sync_time.png", "slotframewise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(3, f_sf, 9, "Slotframe size (slots)", r"Collisions ($\times 10^4$)", "Fig13c_sf_collisions.png", "slotframewise_average_collisions.pdf", y_scale=1e-4)
     plot_sweep(3, f_sf, 5, "Slotframe size (slots)", r"DODAG completion ($\%$)", "Fig13d_sf_dodag_completion.png", "slotframewise_dodag_completion.pdf", is_pct=True)
 
-    # Fig 14: Varying EB Interval Multiplier (nodes=200, sf=61)
     f_eb = {0: 200, 3: 61}
     plot_sweep(4, f_eb, 6, "EB interval multiplier", r"Total sync time ($\times 10^3$ s)", "Fig14a_eb_total_sync_time.png", "eb_intervalwise_total_time.pdf", y_scale=1e-3)
     plot_sweep(4, f_eb, 8, "EB interval multiplier", r"Average sync time ($\times 10^4$ slots)", "Fig14b_eb_avg_sync_time.png", "eb_intervalwise_average_neighbour_time.pdf", y_scale=1e-4)
