@@ -324,6 +324,8 @@ def get_series(prefix, x_col, fixed_filters):
     filtered = data[mask]
     if len(filtered) == 0:
         filtered = data
+    
+    # Average duplicate runs sharing the exact same x coordinate
     by_x = {}
     for row in filtered:
         by_x.setdefault(float(row[x_col]), []).append(row)
