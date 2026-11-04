@@ -10,6 +10,7 @@ jobs:
   simulate:
     runs-on: ubuntu-latest
     container: contiker/contiki-ng:latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -39,24 +40,28 @@ jobs:
 
       - name: Run Cooja Headless Simulation Batch
         run: |
-          mkdir -p /home/user
-          ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
+          # 1. If the Docker image already has pre-installed tools/cooja, copy it into our workspace before symlinking
+          if [ ! -f "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja/build.gradle" ] && [ -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
+            echo "Copying pre-installed Cooja from Docker image..."
+            rm -rf "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
+            cp -a /home/user/contiki-ng/tools/cooja "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
+          fi
 
-          # Reuse pre-existing Gradle cache from /home/user/.gradle if available
+          # 2. Reuse pre-existing Gradle cache from /home/user/.gradle if available
           if [ -d "/home/user/.gradle/caches" ] && [ ! -d "$HOME/.gradle/caches" ]; then
             mkdir -p "$HOME/.gradle"
             cp -rn /home/user/.gradle/* "$HOME/.gradle/" 2>/dev/null || true
           fi
 
-          if [ ! -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
-            echo "tools/cooja missing from repo checkout, cloning Cooja..."
-            rm -rf /home/user/contiki-ng/tools/cooja
-            git clone --depth 1 --recursive https://github.com/contiki-ng/cooja.git /home/user/contiki-ng/tools/cooja
-          fi
+          mkdir -p /home/user
+          rm -rf /home/user/contiki-ng
+          ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
 
-          # Ensure Google Maven Central mirror is injected into build.gradle
-          sed -i 's/mavenCentral()/maven { url "https:\/\/maven-central.storage-download.googleapis.com\/maven2\/" }\n    mavenCentral()/g' \
-            /home/user/contiki-ng/tools/cooja/build.gradle || true
+          # 3. Ensure Google Maven Central mirror is present (idempotent check)
+          if ! grep -q "maven-central.storage-download.googleapis.com" /home/user/contiki-ng/tools/cooja/build.gradle; then
+            sed -i 's/mavenCentral()/maven { url "https:\/\/maven-central.storage-download.googleapis.com\/maven2\/" }\n    mavenCentral()/g' \
+              /home/user/contiki-ng/tools/cooja/build.gradle || true
+          fi
 
           rm -rf Statistics/*
           python3 -c "import scripts.run_cooja_headless as r; r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }})"
