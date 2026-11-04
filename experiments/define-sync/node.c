@@ -193,10 +193,10 @@ PROCESS_THREAD(define_node_process, ev, data)
   ctimer_set(&sf_timer, SF_LENGTH * (CLOCK_SECOND / 100), slotframe_callback, NULL);
   etimer_set(&check_timer, CLOCK_SECOND / 10);
 
-  while(1) {
+  while(!join_logged) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&check_timer));
 
-    if(!join_logged && tsch_is_associated) {
+    if(tsch_is_associated) {
       last_ch_offset = 0xFFFF;
       apply_scheme_schedule();
       energest_flush();
