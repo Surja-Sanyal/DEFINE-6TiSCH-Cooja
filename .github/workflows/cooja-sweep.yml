@@ -18,13 +18,19 @@ jobs:
       fail-fast: false
       matrix:
         scheme: [5, 6, 7, 8, 4, 3, 2, 1]
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cache Gradle Dependencies Across All 128 Jobs
+      - name: Set up JDK 17 (Required by Cooja Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache Gradle Dependencies Across All Jobs
         uses: actions/cache@v4
         with:
           path: |
@@ -56,7 +62,6 @@ jobs:
               /home/user/contiki-ng/tools/cooja/build.gradle || true
           fi
 
-          # Keep existing Statistics so already_computed() skips completed rows!
           python3 -c "import scripts.run_cooja_headless as r; r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }})"
 
       - name: Upload Statistics Artifact
@@ -91,36 +96,38 @@ jobs:
           os.makedirs("Statistics", exist_ok=True)
           merged = {}
 
-          # Load existing Statistics rows first so re-running failed jobs never wipes previously completed rows
           for existing in sorted(glob.glob("Statistics/*_stats_*.txt")):
               fname = os.path.basename(existing)
               with open(existing, "r") as f:
                   for line in f:
                       line = line.strip()
                       if line:
-                          key = tuple(line.split(",")[:5])
-                          merged.setdefault(fname, {})[key] = line
+                          parts = [p.strip() for p in line.split(",") if p.strip()]
+                          if len(parts) >= 10 and float(parts[9]) > 0:
+                              key = (int(float(parts[0])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])))
+                              merged.setdefault(fname, {})[key] = line
 
-          # Overlay newly downloaded artifact rows (newer rows overwrite older rows with the same 5-tuple parameter key)
           for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_*.txt", recursive=True)):
               fname = os.path.basename(filepath)
               with open(filepath, "r") as f:
                   for line in f:
                       line = line.strip()
                       if line:
-                          key = tuple(line.split(",")[:5])
-                          merged.setdefault(fname, {})[key] = line
+                          parts = [p.strip() for p in line.split(",") if p.strip()]
+                          if len(parts) >= 10 and float(parts[9]) > 0:
+                              key = (int(float(parts[0])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])))
+                              merged.setdefault(fname, {})[key] = line
 
           for fname, row_dict in merged.items():
-              sorted_lines = [row_dict[k] for k in sorted(row_dict.keys(), key=lambda x: tuple(float(v) for v in x))]
+              sorted_lines = [row_dict[k] for k in sorted(row_dict.keys())]
               out_path = os.path.join("Statistics", fname)
               with open(out_path, "w") as f:
                   f.write("\n".join(sorted_lines) + "\n")
-              print(f"Merged {len(sorted_lines)} unique parameter rows into {out_path}")
+              print(f"Merged {len(sorted_lines)} valid non-zero rows into {out_path}")
           '
 
           if [ -f "scripts/plot_results.py" ]; then
-            python3 scripts/plot_results.py || echo "Plotting script warning, continuing..."
+            python3 scripts/plot_results.py
           fi
 
       - name: Upload Unified Final Results & Plots
