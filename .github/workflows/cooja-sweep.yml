@@ -136,6 +136,11 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          if [ -f "scripts/plot_results.py" ]; then
+            python3 scripts/plot_results.py
+          fi
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, Fig 6, and Figs 9-14 PDFs" && git pull --rebase --autostash origin main && git push origin main)
+          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, Fig 6, and Figs 9-14 PDFs" && git push origin main)
