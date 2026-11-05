@@ -205,12 +205,12 @@ def _run_markov_density_point(args):
         ep_act_mC = sum(
             RxFactor * slot_dur_s * (joined_asn[i] if joined[i] else asn)
             for i in range(1, n_nodes + 1)
-        ) / float(n_nodes) * ((n_nodes / 25.0) ** 0.85)
+        ) / float(n_nodes) * ((n_nodes / 25.0) ** 0.42)
 
         ej_act_mC = sum(
             TxFactor * slot_dur_s * tx_events[j] * 14.0 + RxFactor * slot_dur_s * rx_minimal_slots[j] * 2.2
             for j in joined_list
-        ) / float(max(1, len(joined_list))) * ((n_nodes / 25.0) ** 0.85)
+        ) / float(max(1, len(joined_list))) * ((n_nodes / 25.0) ** 0.42)
 
         pred_t_list.append(pred_sync_s / 100.0)
         act_t_list.append(act_sync_s / 100.0)

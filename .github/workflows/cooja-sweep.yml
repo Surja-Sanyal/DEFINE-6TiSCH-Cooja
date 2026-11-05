@@ -43,6 +43,7 @@ jobs:
 
       - name: Run Cooja Headless Simulation Batch
         run: |
+          rm -rf Statistics/*_cooja_stats_.txt
           if [ ! -f "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja/build.gradle" ] && [ -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
             rm -rf "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
             cp -a /home/user/contiki-ng/tools/cooja "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
@@ -96,17 +97,6 @@ jobs:
           os.makedirs("Statistics", exist_ok=True)
           merged = {}
 
-          for existing in sorted(glob.glob("Statistics/*_stats_*.txt")):
-              fname = os.path.basename(existing)
-              with open(existing, "r") as f:
-                  for line in f:
-                      line = line.strip()
-                      if line:
-                          parts = [p.strip() for p in line.split(",") if p.strip()]
-                          if len(parts) >= 10 and float(parts[9]) > 0:
-                              key = (int(float(parts[0])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])))
-                              merged.setdefault(fname, {})[key] = line
-
           for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_*.txt", recursive=True)):
               fname = os.path.basename(filepath)
               with open(filepath, "r") as f:
@@ -148,4 +138,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged Cooja statistics, Markov Fig 6, and Figs 9-14 PDFs" && git pull --rebase --autostash origin main && git push origin main)
+          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, Fig 6, and Figs 9-14 PDFs" && git pull --rebase --autostash origin main && git push origin main)
