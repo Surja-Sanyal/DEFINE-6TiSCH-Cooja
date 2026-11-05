@@ -60,7 +60,7 @@ update_advertising_link(uint16_t ch_offset)
       last_ch_offset = 0;
     } else if(tsch_schedule_add_link(sf_min,
          LINK_OPTION_TX | LINK_OPTION_RX | LINK_OPTION_SHARED,
-         LINK_TYPE_ADVERTISING_ONLY, &tsch_broadcast_address, 1, ch_offset, 1) != NULL) {
+         LINK_TYPE_ADVERTISING, &tsch_broadcast_address, (uint16_t)(1 + (node_id % 2)), ch_offset, 1) != NULL) {
       last_ch_offset = ch_offset;
     }
   }

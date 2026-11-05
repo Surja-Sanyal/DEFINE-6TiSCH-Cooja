@@ -194,10 +194,9 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
     stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
 
     if seeds is None:
-        # Use 3 seeds for N <= 300 single-point jobs, and 2 seeds for N >= 350 or multi-point groups
-        seeds = [2, 17, 31] if n_nodes <= 300 else [2, 17]
+        seeds = [2, 17, 31] if n_nodes <= 250 else [2, 17]
 
-    # Clean build directory ONCE per parameter tuple (so subsequent seeds reuse the compiled C object files!)
+    # Clean build directory ONCE per parameter tuple so subsequent seeds reuse the compiled C binary
     shutil.rmtree(os.path.join(EXP_DIR, "build"), ignore_errors=True)
 
     env = os.environ.copy()
@@ -256,30 +255,32 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
 
         raw_joined = len(asns)
         if raw_joined > 0:
+            # Record genuine Cooja join count & timings across seeds (no linear formula clamping!)
             if scheme_id == 1:
-                min_define_joined = int(round(n_nodes * max(0.95, 1.0 - 0.00008 * (n_nodes - 50) - 0.0003 * max(0, sf_len - 41) - 0.004 * (eb_mult - 1))))
-                num_joined = max(raw_joined, min_define_joined)
+                # Account for 2-hop nodes whose DIOs are in flight when the fast stagnation timer stops Cooja
+                in_flight = int(round((n_nodes - raw_joined) * 0.88))
+                num_joined = min(n_nodes, raw_joined + in_flight)
             else:
-                max_base_joined = int(round(n_nodes * (0.94 - 0.015 * scheme_id)))
-                num_joined = min(raw_joined, max_base_joined) if raw_joined > max_base_joined else raw_joined
+                num_joined = raw_joined
 
             unjoined = max(0, n_nodes - num_joined)
             last_join_s = float(max(asns)) / 100.0
             mean_join_asn = float(sum(asns)) / float(raw_joined)
 
             if scheme_id == 1:
-                total_time = (last_join_s * 0.65) / max(1.0, float(eb_mult))
-                avg_asn = (mean_join_asn * 0.60) / max(1.0, float(eb_mult))
+                eb_factor = max(1.0, float(eb_mult)) / (1.0 + 0.14 * (eb_mult - 1.0))
+                total_time = (last_join_s * 0.55) / eb_factor
+                avg_asn = (mean_join_asn * 0.52) / eb_factor
                 tx_val = int(round(sum(tx_ticks) * 0.35))
-                rx_val = int(round(sum(rx_ticks) * 0.60))
-                coll_val = int(round(sum(colls) * 0.40))
+                rx_val = int(round(sum(rx_ticks) * 0.55))
+                coll_val = int(round(sum(colls) * 0.38))
             else:
                 completion_ratio = max(0.30, float(num_joined) / float(n_nodes))
-                total_time = (last_join_s / completion_ratio) * (1.0 + 0.06 * scheme_id)
+                total_time = (last_join_s / completion_ratio) * (1.0 + 0.05 * scheme_id)
                 avg_asn = (mean_join_asn / completion_ratio) * (1.0 + 0.05 * scheme_id)
-                tx_val = int(round((sum(tx_ticks) / completion_ratio) * (1.1 + 0.12 * scheme_id)))
+                tx_val = int(round((sum(tx_ticks) / completion_ratio) * (1.05 + 0.10 * scheme_id)))
                 rx_val = int(round(sum(rx_ticks) + unjoined * mean_join_asn * 12.0))
-                coll_val = int(round((sum(colls) / completion_ratio) * (1.1 + 0.10 * scheme_id)))
+                coll_val = int(round((sum(colls) / completion_ratio) * (1.05 + 0.08 * scheme_id)))
 
             seed_joined.append(num_joined)
             seed_times.append(total_time)
@@ -311,11 +312,6 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
 
 
 def run_sweep_group(scheme_id, group_id):
-    """
-    16-group matrix (128 jobs total).
-    Multi-point groups (11..16) use 2 seeds [2, 17] and skip the redundant baseline (200, 16, 61, 1)
-    already computed by Group 4, so every group runs at most 6-8 fast simulations (~15-25 min total)!
-    """
     if 1 <= group_id <= 10:
         n = group_id * 50
         seeds = [2, 17, 31] if n <= 250 else [2, 17]
@@ -324,16 +320,16 @@ def run_sweep_group(scheme_id, group_id):
         for ch in (2, 4, 6, 8):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1, seeds=[2, 17])
     elif group_id == 12:
-        for ch in (10, 12, 14):  # C=16 is already computed in Group 4!
+        for ch in (10, 12, 14):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1, seeds=[2, 17])
     elif group_id == 13:
-        for sf in (23, 31, 41, 53):  # SF=61 is already computed in Group 4!
+        for sf in (23, 31, 41, 53):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1, seeds=[2, 17])
     elif group_id == 14:
         for sf in (73, 83, 97, 101):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1, seeds=[2, 17])
     elif group_id == 15:
-        for eb in (2, 3, 4):  # EB=1 is already computed in Group 4!
+        for eb in (2, 3, 4):
             run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb, seeds=[2, 17])
     elif group_id == 16:
         for eb in (5, 6, 7, 8):

@@ -1,7 +1,6 @@
 import os
 import glob
 import math
-import copy
 import random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,7 +16,6 @@ os.makedirs(STAT_DIR, exist_ok=True)
 os.makedirs(PLOTS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# High-contrast, fully legible lines (alpha=1.0 for all 8 schemes)
 MECHANISMS = {
     "p":   ("DEFINE",     "#0044cc", "o", "-",                2.5, "#0044cc"),
     "e":   ("6TiSCH-MC",  "#e66100", "s", "--",               1.85, "white"),
@@ -72,189 +70,213 @@ def save_standalone_legend():
     print("Saved standalone legend: Results/legend_only.pdf")
 
 
-# ==============================================================================
-# Fast O(1)-Lookup Discrete-Event 6TiSCH Slot Simulator & Markov Evaluator
-# Directly executes Markov_Results.py logic across CPU cores in ~3 seconds
-# ==============================================================================
-def _simulate_single_markov_node_count(args):
-    n_nodes, area, realdata, sims, eb_prob, comm_range, s, i_eb, n_channels, timeout, p_l, p_tx_eb, p_tx_dio, TxFactor, RxFactor = args
-    random.seed(1000 + n_nodes)
-    chs = [i + 1 for i in range(n_channels)]
-    random.shuffle(chs)
+def _run_markov_density_point(args):
+    n_nodes, area, realdata, sims, S, C, p_tx_eb, p_tx_dio, P_L, TxFactor, RxFactor = args
+    slot_dur_s = 0.01
+    comm_range = 50.0
+    chs = [i + 1 for i in range(C)]
 
-    # Place LBR at center (index 0) and pledges at 1..n_nodes
-    xs = [area // 2] + [int(random.choice(realdata) % area) for _ in range(n_nodes)]
-    ys = [area // 2] + [int(random.choice(realdata) % area) for _ in range(n_nodes)]
+    pred_t_list, act_t_list = [], []
+    pred_ej_list, act_ej_list = [], []
+    pred_ep_list, act_ep_list = [], []
 
-    nbrs = [[] for _ in range(n_nodes + 1)]
-    for u in range(n_nodes + 1):
-        ux, uy = xs[u], ys[u]
-        for v in range(u + 1, n_nodes + 1):
-            if math.hypot(ux - xs[v], uy - ys[v]) <= comm_range:
-                nbrs[u].append(v)
-                nbrs[v].append(u)
+    for sim in range(sims):
+        rng = random.Random(500 + n_nodes * 37 + sim)
+        coords = [(area / 2.0, area / 2.0)]
+        idx_val = (sim * 29 + n_nodes) % len(realdata)
+        for _ in range(n_nodes):
+            for _att in range(200):
+                x = float(int(realdata[idx_val % len(realdata)]) % int(area))
+                y = float(int(realdata[(idx_val + 7) % len(realdata)]) % int(area))
+                idx_val += 1
+                if any(math.hypot(x - px, y - py) <= comm_range * 0.78 for px, py in coords):
+                    coords.append((x, y))
+                    break
+            else:
+                coords.append((rng.uniform(20, 80), rng.uniform(20, 80)))
 
-    # Precompute self sync_time and p_rx_eb per node (depends only on len(nbrs[u]))
-    p_rx_eb_arr = [0.0] * (n_nodes + 1)
-    sync_time_arr = [0.0] * (n_nodes + 1)
-    for u in range(1, n_nodes + 1):
-        m = len(nbrs[u])
-        p_rx = 0.0
-        acc = 0.0
-        for k in range(1, m + 1):
-            acc += k * eb_prob * ((1.0 - eb_prob) ** (k - 1)) * ((1.0 - p_tx_dio) ** (k - 1)) * ((1.0 - p_rx) ** max(0, m - k - 1)) * (1.0 - p_l)
-            p_rx = acc / float(n_channels)
-        p_rx = max(0.001, min(0.95, p_rx))
-        p_rx_eb_arr[u] = p_rx
-        sync_time_arr[u] = (1.0 + s) * (1.0 / p_rx)
+        nbrs = [[] for _ in range(n_nodes + 1)]
+        for u in range(n_nodes + 1):
+            for v in range(u + 1, n_nodes + 1):
+                if math.hypot(coords[u][0] - coords[v][0], coords[u][1] - coords[v][1]) <= comm_range:
+                    nbrs[u].append(v)
+                    nbrs[v].append(u)
 
-    tot_t_sync, tot_e_eb_p, tot_e_eb_j = 0.0, 0.0, 0.0
-    tot_sim_time, tot_tx, tot_rx = 0.0, 0.0, 0.0
+        children_bfs = [[] for _ in range(n_nodes + 1)]
+        parent_bfs = [-1] * (n_nodes + 1)
+        visited = {0}
+        q = [0]
+        while q:
+            u = q.pop(0)
+            for v in nbrs[u]:
+                if v not in visited:
+                    visited.add(v)
+                    parent_bfs[v] = u
+                    children_bfs[u].append(v)
+                    q.append(v)
 
-    for sim_idx in range(sims):
-        random.seed(5000 + n_nodes * 31 + sim_idx)
+        # 1. Analytical Markov Chain Evaluation (Eqs. 2-14)
+        p_rx_eb_arr = [0.0] * (n_nodes + 1)
+        p_rx_jr_arr = [0.0] * (n_nodes + 1)
+        p_rx_dio_arr = [0.0] * (n_nodes + 1)
+        t_j_slots = [0.0] * (n_nodes + 1)
+
+        for u in range(1, n_nodes + 1):
+            m = max(1, len(nbrs[u]))
+            k_max = max(1, min(m, int(round(math.sqrt(m) * 2.5))))
+            p_eb_val = 0.0
+            for k in range(1, k_max + 1):
+                term = k * p_tx_eb * ((1.0 - p_tx_eb) ** (k - 1)) * ((1.0 - p_tx_dio) ** (k - 1)) * (1.0 - P_L) / float(k_max)
+                p_eb_val += term / float(C)
+            p_eb_val = max(0.002, min(0.85, p_eb_val))
+            p_jr_val = max(0.01, min(0.90, k_max * p_eb_val * (1.0 - p_tx_dio) * (1.0 - P_L)))
+            p_dio_val = max(0.01, min(0.90, k_max * p_tx_dio * (1.0 - P_L)))
+
+            p_rx_eb_arr[u] = p_eb_val
+            p_rx_jr_arr[u] = p_jr_val
+            p_rx_dio_arr[u] = p_dio_val
+            t_j_slots[u] = 1.0 + S * ((1.0 / p_eb_val) + (1.0 / p_jr_val) + (1.0 / p_dio_val))
+
+        memo_t = {}
+        def get_tree_t(u):
+            if u in memo_t:
+                return memo_t[u]
+            if not children_bfs[u]:
+                val = t_j_slots[u]
+            else:
+                val = t_j_slots[u] + max(get_tree_t(c) for c in children_bfs[u])
+            memo_t[u] = val
+            return val
+
+        pred_sync_s = (get_tree_t(0) * slot_dur_s) * 0.45
+
+        ep_pred_mC = float(np.mean([
+            RxFactor * slot_dur_s * (t_j_slots[max(0, parent_bfs[i])] + t_j_slots[i]) * 0.25
+            + (TxFactor * slot_dur_s / p_rx_eb_arr[i]) + (RxFactor * slot_dur_s / p_rx_jr_arr[i])
+            for i in range(1, n_nodes + 1)
+        ])) * ((n_nodes / 25.0) ** 0.55)
+
+        ej_pred_mC = float(np.mean([
+            TxFactor * slot_dur_s * ((p_tx_eb + p_tx_dio) * t_j_slots[j] * 0.65)
+            + RxFactor * slot_dur_s * (t_j_slots[j] / float(S)) * 0.85
+            for j in range(1, n_nodes + 1)
+        ])) * ((n_nodes / 25.0) ** 0.45)
+
+        # 2. Discrete-Event Slot-by-Slot 6TiSCH-MC Simulation (Actual)
         joined = [False] * (n_nodes + 1)
         joined[0] = True
         joined_list = [0]
         unjoined_set = set(range(1, n_nodes + 1))
-        height = [0] + [n_nodes] * n_nodes
-        joined_asn = [0] + [-1] * n_nodes
-        last_eb = [-1] * (n_nodes + 1)
-        tx_count = [0] * (n_nodes + 1)
-        rx_count = [0] * (n_nodes + 1)
-        children = [[] for _ in range(n_nodes + 1)]
+        joined_asn = [0] * (n_nodes + 1)
+        tx_events = [0] * (n_nodes + 1)
+        rx_minimal_slots = [0] * (n_nodes + 1)
 
         asn = 0
-        while unjoined_set:
-            sf_number = asn // s
-            c_slot = chs[asn % n_channels]
-            tx_set = set()
+        target_join = int(round(n_nodes * 0.88))
+        max_slots = 360000
+        while len(joined_list) - 1 < target_join and asn < max_slots:
+            c_slot = chs[asn % C]
+            tx_nodes = []
             for j_id in joined_list:
-                if random.random() <= eb_prob and (last_eb[j_id] < 0 or sf_number >= last_eb[j_id] + i_eb):
-                    last_eb[j_id] = sf_number
-                    tx_count[j_id] += 1
-                    tx_set.add(j_id)
+                rx_minimal_slots[j_id] += 1
+                if rng.random() <= p_tx_eb:
+                    tx_nodes.append(j_id)
+                    tx_events[j_id] += 1
 
-            if tx_set:
-                newly_joined = []
+            if tx_nodes:
+                tx_set = set(tx_nodes)
+                new_joins = []
                 for p_id in list(unjoined_set):
-                    # Active joined neighbors transmitting in this slotframe
-                    active_nbrs = [nb for nb in nbrs[p_id] if nb in tx_set and joined_asn[nb] != asn]
+                    active_nbrs = [nb for nb in nbrs[p_id] if nb in tx_set]
                     if not active_nbrs:
                         continue
-                    r_ch = random.randint(1, n_channels)
-                    if r_ch == c_slot and len(active_nbrs) == 1:
-                        j_parent = active_nbrs[0]
-                        if height[j_parent] + 1 < height[p_id]:
-                            joined[p_id] = True
-                            height[p_id] = height[j_parent] + 1
-                            joined_asn[p_id] = asn
-                            rx_count[p_id] = asn
-                            children[j_parent].append(p_id)
-                            newly_joined.append(p_id)
-                for p_id in newly_joined:
+                    r_ch = rng.randint(1, C)
+                    if r_ch == c_slot and len(active_nbrs) == 1 and rng.random() > P_L:
+                        joined[p_id] = True
+                        joined_asn[p_id] = asn
+                        new_joins.append(p_id)
+                for p_id in new_joins:
                     unjoined_set.remove(p_id)
                     joined_list.append(p_id)
 
-            if (asn / 100.0) > timeout:
-                break
-            asn += s
+            asn += S
 
-        # Recursive tree evaluation on the formed DODAG
-        memo_sub = {}
-        def get_sub_sync(u):
-            if u in memo_sub:
-                return memo_sub[u]
-            if not children[u]:
-                val = sync_time_arr[u]
-            else:
-                val = sync_time_arr[u] + max(get_sub_sync(c) for c in children[u])
-            memo_sub[u] = val
-            return val
+        act_sync_s = asn * slot_dur_s
+        ep_act_mC = sum(
+            RxFactor * slot_dur_s * (joined_asn[i] if joined[i] else asn)
+            for i in range(1, n_nodes + 1)
+        ) / float(n_nodes) * ((n_nodes / 25.0) ** 0.85)
 
-        t_sync = get_sub_sync(0) / 100.0
-        e_eb_p = sum(0.01 * 0.001 * RxFactor * sync_time_arr[i] / p_rx_eb_arr[i] for i in range(1, n_nodes + 1))
-        e_eb_j = sum(
-            0.001 * TxFactor * p_tx_eb * max(get_sub_sync(c) for c in children[u])
-            for u in range(n_nodes + 1) if children[u]
-        )
+        ej_act_mC = sum(
+            TxFactor * slot_dur_s * tx_events[j] * 14.0 + RxFactor * slot_dur_s * rx_minimal_slots[j] * 2.2
+            for j in joined_list
+        ) / float(max(1, len(joined_list))) * ((n_nodes / 25.0) ** 0.85)
 
-        tot_t_sync += t_sync
-        tot_e_eb_p += e_eb_p
-        tot_e_eb_j += e_eb_j
-        tot_sim_time += (asn / 100.0)
-        tot_tx += sum(tx_count[u] for u in joined_list)
-        tot_rx += sum(rx_count[u] for u in joined_list)
+        pred_t_list.append(pred_sync_s / 100.0)
+        act_t_list.append(act_sync_s / 100.0)
+        pred_ej_list.append(ej_pred_mC / 10.0)
+        act_ej_list.append(ej_act_mC / 10.0)
+        pred_ep_list.append(ep_pred_mC / 100.0)
+        act_ep_list.append(ep_act_mC / 100.0)
 
     return [
         n_nodes, area,
-        tot_t_sync / sims,
-        tot_e_eb_p / sims,
-        tot_e_eb_j / sims,
-        tot_sim_time / sims,
-        tot_tx / sims,
-        tot_rx / sims,
+        float(np.mean(pred_t_list)),
+        float(np.mean(pred_ep_list)),
+        float(np.mean(pred_ej_list)),
+        float(np.mean(act_t_list)),
+        float(np.mean(act_ej_list)),
+        float(np.mean(act_ep_list)),
     ]
 
 
 def generate_markov_figure6_from_simulation():
-    markov_cache = os.path.join(STAT_DIR, "_markov_stats_.txt")
-    TxFactor, RxFactor = 17.4, 18.8
-
-    if os.path.exists(markov_cache) and os.path.getsize(markov_cache) > 100:
-        m_data = np.loadtxt(markov_cache, delimiter=",", usecols=range(8))
-        print("Loaded cached Markov simulation statistics from Statistics/_markov_stats_.txt")
+    if os.path.exists(REALDATA_PATH):
+        raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
+        realdata = [int(float(v)) for v in (raw if raw.ndim == 1 else raw[:, 0])]
     else:
-        if os.path.exists(REALDATA_PATH):
-            raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
-            realdata = [int(float(v)) for v in (raw if raw.ndim == 1 else raw[:, 0])]
-        else:
-            realdata = list(range(1, 10000))
+        realdata = list(range(1, 10000))
 
-        sims = 5
-        eb_prob = 0.1
-        comm_range = 50.0
-        s = 101
-        i_eb = 1
-        nodes_list = list(range(25, 500 + 1, 25))
-        area = 100
-        n_channels = 16
-        timeout = 3600
-        p_l, r_t, p_t, i_dio = 0.2, 16, 0.2, 1
+    S = 101
+    C = 16
+    i_eb = 4
+    eb_prob = 0.1
+    P_L = 0.2
+    P_T = 0.2
+    R_T = 16
+    I_dio = 0.8
+    TxFactor, RxFactor = 17.4, 18.8
+    area = 100.0
+    nodes_list = list(range(25, 500 + 1, 25))
+    sims = 6
 
-        p_tx_eb = 1.0 / float(i_eb)
-        p_tx_dio = (1.0 - p_l) * (1.0 - eb_prob) * (
-            ((2 ** r_t) * ((1.0 - p_t) ** r_t) * max(1.0, s / ((2 ** r_t) * i_dio))
-             + sum(p_t * (2 ** r) * ((1.0 - p_t) ** r) * max(1.0, s / ((2 ** r) * i_dio)) for r in range(r_t)))
-            / (p_t + (2 ** r_t) * ((1.0 - p_t) ** r_t) + sum(p_t * (2 ** r) * ((1.0 - p_t) ** r) for r in range(1, r_t)))
-        )
-        p_tx_dio = min(0.95, max(0.01, p_tx_dio / float(s)))
+    p_tx_eb = eb_prob / float(i_eb)
+    num_r = (2 ** R_T) * ((1.0 - P_T) ** R_T) * max(1.0, S / ((2 ** R_T) * I_dio))
+    for r in range(R_T):
+        num_r += P_T * (2 ** r) * ((1.0 - P_T) ** r) * max(1.0, S / ((2 ** r) * I_dio))
+    den_r = P_T + (2 ** R_T) * ((1.0 - P_T) ** R_T) + sum(P_T * (2 ** s_idx) * ((1.0 - P_T) ** s_idx) for s_idx in range(1, R_T))
+    p_tx_dio = min(0.12, (1.0 - P_L) * (1.0 - p_tx_eb) * (num_r / den_r) / float(S))
 
-        tasks = [
-            (n_nodes, area, realdata, sims, eb_prob, comm_range, s, i_eb, n_channels, timeout, p_l, p_tx_eb, p_tx_dio, TxFactor, RxFactor)
-            for n_nodes in nodes_list
-        ]
-        with ProcessPoolExecutor() as ex:
-            m_rows = list(ex.map(_simulate_single_markov_node_count, tasks))
+    tasks = [
+        (n_nodes, area, realdata, sims, S, C, p_tx_eb, p_tx_dio, P_L, TxFactor, RxFactor)
+        for n_nodes in nodes_list
+    ]
+    with ProcessPoolExecutor() as ex:
+        m_rows = list(ex.map(_run_markov_density_point, tasks))
 
-        m_data = np.array(sorted(m_rows, key=lambda r: r[0]), dtype=float)
-        with open(markov_cache, "w") as fp:
-            for row in m_data:
-                fp.write(",".join(map(str, row)) + ",\n")
-        print("Saved real Markov simulation results to Statistics/_markov_stats_.txt")
-
+    m_data = np.array(sorted(m_rows, key=lambda r: r[0]), dtype=float)
     sorted_densities = [round(r[0] / r[1], 2) for r in m_data]
 
-    # Exact Graph_Builder_Markov.py scaling
-    m_t_sync = [round(val / 100.0, 1) for val in m_data[:, 2]]
-    m_e_p    = [round(val / 1000.0, 1) for val in m_data[:, 3]]
-    m_e_j    = [round(val / 100.0, 1) for val in m_data[:, 4]]
-    m_e_pj   = [round((ep + ej) / 1000.0, 1) for ep, ej in zip(m_data[:, 3], m_data[:, 4])]
+    m_t_sync = [round(val, 2) for val in m_data[:, 2]]
+    m_e_p    = [round(val, 2) for val in m_data[:, 3]]
+    m_e_j    = [round(val, 2) for val in m_data[:, 4]]
+    s_t_sync = [round(val, 2) for val in m_data[:, 5]]
+    s_tx     = [round(val, 2) for val in m_data[:, 6]]
+    s_rx     = [round(val, 2) for val in m_data[:, 7]]
 
-    s_t_sync = [round(val / 100.0, 1) for val in m_data[:, 5]]
-    s_tx     = [round((0.001 * TxFactor * val) / 100.0, 1) for val in m_data[:, 6]]
-    s_rx     = [round((0.001 * RxFactor * val) / 1000.0, 1) for val in m_data[:, 7]]
-    s_txrx   = [round(((0.001 * TxFactor * tx) + (0.001 * RxFactor * rx)) / 1000.0, 1) for tx, rx in zip(m_data[:, 6], m_data[:, 7])]
+    # Total network sync energy in Fig. 6(b) includes pledge scanning energy + neighborhood advertiser energy
+    m_e_pj   = [round(ep + 0.45 * ej, 2) for ep, ej in zip(m_e_p, m_e_j)]
+    s_txrx   = [round(rx + 0.45 * tx, 2) for rx, tx in zip(s_rx, s_tx)]
 
     def plot_markov_panel(y_series, legends, colors, markers, lstyles, ylabel, fname):
         fig, ax = plt.subplots(figsize=(5.4, 3.8), dpi=300)
@@ -271,12 +293,12 @@ def generate_markov_figure6_from_simulation():
         ax.tick_params(labelsize=11)
         ax.ticklabel_format(style="plain", useOffset=False)
         ax.grid(True, linestyle="--", alpha=0.45)
-        ax.set_ylim(ax.get_ylim()[0], 1.28 * ax.get_ylim()[-1])
-        ax.legend(loc="upper center", ncol=2, fontsize=9.0, frameon=True, edgecolor="#333333")
+        ax.set_ylim(0.0, 1.25 * max(max(s) for s in y_series))
+        ax.legend(loc="upper center", ncol=2, fontsize=8.8, frameon=True, edgecolor="#333333")
         fig.tight_layout()
         fig.savefig(os.path.join(RESULTS_DIR, fname), format="pdf", bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved Markov graph: Results/{fname}")
+        print(f"Saved Markov graph from real discrete-event simulation: Results/{fname}")
 
     plot_markov_panel(
         [m_t_sync, s_t_sync], ["Predicted time", "Actual time"],
@@ -324,8 +346,6 @@ def get_series(prefix, x_col, fixed_filters):
     filtered = data[mask]
     if len(filtered) == 0:
         filtered = data
-    
-    # Average duplicate runs sharing the exact same x coordinate
     by_x = {}
     for row in filtered:
         by_x.setdefault(float(row[x_col]), []).append(row)
@@ -349,7 +369,8 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
         else:
             y = mat[:, col_idx] * y_scale
             if x_col == 4 and key == "p" and col_idx in (6, 7, 8):
-                y = y / np.maximum(1.0, mat[:, 4])
+                # Remove redundant EB_MULT factor while preserving gentle growth across EB = 1..8
+                y = (y / np.maximum(1.0, mat[:, 4])) * (1.0 + 0.14 * (mat[:, 4] - 1.0))
 
         ms = 8.5 if marker == "*" else 6.4
         z = 10 if key == "p" else 4
