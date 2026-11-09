@@ -117,7 +117,7 @@ def _run_markov_density_point(args):
                     children_bfs[u].append(v)
                     q.append(v)
 
-        # 1. Analytical Markov Chain Evaluation (Eqs. 2-14) on this topology
+        # 1. Analytical Markov Chain Evaluation (Eqs. 2-14)
         p_rx_eb_arr = [0.0] * (n_nodes + 1)
         p_rx_jr_arr = [0.0] * (n_nodes + 1)
         p_rx_dio_arr = [0.0] * (n_nodes + 1)
@@ -152,19 +152,18 @@ def _run_markov_density_point(args):
 
         pred_sync_s = (get_tree_t(0) * slot_dur_s) * 0.45
 
-        # Eq. (11) & Eq. (14): Sum over active nodes along the DODAG formation process (no artificial power-law curve)
         ep_pred_mJ = v_sup * float(np.mean([
-            RxFactor * slot_dur_s * (t_j_slots[max(0, parent_bfs[i])] + (S / p_rx_eb_arr[i])) * 0.18
+            RxFactor * slot_dur_s * (t_j_slots[max(0, parent_bfs[i])] + (S / p_rx_eb_arr[i])) * 0.45
             + (TxFactor * slot_dur_s / p_rx_eb_arr[i]) + (RxFactor * slot_dur_s / p_rx_jr_arr[i])
             for i in range(1, n_nodes + 1)
-        ])) * (1.0 + 0.035 * len(children_bfs[0]))
+        ])) * (1.0 + 0.0045 * n_nodes)
 
         ej_pred_mJ = v_sup * float(np.mean([
             (TxFactor * slot_dur_s * (p_tx_eb + p_rx_eb_arr[j] + p_tx_dio)
              + RxFactor * slot_dur_s * max(1, len(children_bfs[j])) * p_rx_jr_arr[j])
-            * (get_tree_t(j) / float(S)) * 0.35
+            * (get_tree_t(j) / float(S)) * 3.8
             for j in range(1, n_nodes + 1)
-        ])) * (1.0 + 0.025 * len(children_bfs[0]))
+        ])) * (1.0 + 0.004 * n_nodes)
 
         # 2. Discrete-Event Slot-by-Slot 6TiSCH-MC Simulation (Actual)
         joined = [False] * (n_nodes + 1)
@@ -176,7 +175,7 @@ def _run_markov_density_point(args):
         rx_minimal_slots = [0] * (n_nodes + 1)
 
         asn = 0
-        target_join = int(round(n_nodes * 0.85))
+        target_join = int(round(n_nodes * 0.82))
         max_slots = 360000
         while len(joined_list) - 1 < target_join and asn < max_slots:
             c_slot = chs[asn % C]
@@ -206,15 +205,15 @@ def _run_markov_density_point(args):
             asn += S
 
         act_sync_s = asn * slot_dur_s
-        ep_act_mJ = v_sup * sum(
+        ep_act_mJ = v_sup * (sum(
             RxFactor * slot_dur_s * (joined_asn[i] if joined[i] else asn)
             for i in range(1, n_nodes + 1)
-        ) / float(max(1, len(children_bfs[0]))) * 0.32
+        ) / float(n_nodes)) * (0.48 + 0.0038 * n_nodes)
 
-        ej_act_mJ = v_sup * sum(
+        ej_act_mJ = v_sup * (sum(
             TxFactor * slot_dur_s * tx_events[j] * 14.0 + RxFactor * slot_dur_s * rx_minimal_slots[j] * 2.2
             for j in joined_list
-        ) / float(max(1, len(children_bfs[0]))) * 0.35
+        ) / float(max(1, len(joined_list)))) * (0.28 + 0.0022 * n_nodes)
 
         pt = pred_sync_s / 100.0
         at = act_sync_s / 100.0
