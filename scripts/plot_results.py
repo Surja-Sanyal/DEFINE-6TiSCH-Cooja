@@ -310,7 +310,7 @@ def generate_markov_figure6_from_simulation():
         ax.ticklabel_format(style="plain", useOffset=False)
         ax.grid(True, linestyle="--", alpha=0.45)
         ax.set_ylim(0.0, 1.25 * max_y)
-        ax.legend(loc="upper center", ncol=2, fontsize=8.8, frameon=True, edgecolor="#333333")
+        ax.legend(loc="upper left", ncol=1, fontsize=18, frameon=True, edgecolor="#333333")
         fig.tight_layout()
         fig.savefig(os.path.join(RESULTS_DIR, fname), format="pdf", bbox_inches="tight")
         plt.close(fig)
