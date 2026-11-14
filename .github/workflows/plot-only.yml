@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: plot-regeneration
+  cancel-in-progress: true
+
 jobs:
   plot:
     runs-on: ubuntu-latest
@@ -42,15 +46,21 @@ jobs:
 
       - name: Auto-Commit Merged Results to Repository
         run: |
-          rm -rf tmp_artifacts
+          rm -rf tmp_artifacts /tmp/new_results
+          mkdir -p /tmp/new_results
+          cp -a Statistics Plots Results /tmp/new_results/ 2>/dev/null || true
+          cp -a *.png /tmp/new_results/ 2>/dev/null || true
+
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
-          git checkout -B main origin/main
-          if [ -f "scripts/plot_results.py" ]; then
-            python3 scripts/plot_results.py
-          fi
+          git checkout -f -B main origin/main
+          git clean -fd
+
+          cp -a /tmp/new_results/* . 2>/dev/null || true
+          rm -rf /tmp/new_results
+
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, Fig 6, and Figs 9-14 PDFs" && git push origin main)
+          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, CDF plot, and Figs 7-12 PDFs" && git push origin main)

@@ -105,7 +105,6 @@ jobs:
                       if line:
                           parts = [p.strip() for p in line.split(",") if p.strip()]
                           if len(parts) >= 10 and float(parts[9]) > 0:
-                              # Include area (parts[1]) and seed row index so multi-seed and fixed-area vs constant-density rows are preserved
                               key = (int(float(parts[0])), int(float(parts[1])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])), idx)
                               merged.setdefault(fname, {})[key] = line
 
@@ -133,15 +132,21 @@ jobs:
 
       - name: Auto-Commit Merged Results to Repository
         run: |
-          rm -rf tmp_artifacts
+          rm -rf tmp_artifacts /tmp/new_results
+          mkdir -p /tmp/new_results
+          cp -a Statistics Plots Results /tmp/new_results/ 2>/dev/null || true
+          cp -a *.png /tmp/new_results/ 2>/dev/null || true
+
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
-          git checkout -B main origin/main
-          if [ -f "scripts/plot_results.py" ]; then
-            python3 scripts/plot_results.py
-          fi
+          git checkout -f -B main origin/main
+          git clean -fd
+
+          cp -a /tmp/new_results/* . 2>/dev/null || true
+          rm -rf /tmp/new_results
+
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
           git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, CDF plot, and Figs 7-12 PDFs" && git push origin main)
