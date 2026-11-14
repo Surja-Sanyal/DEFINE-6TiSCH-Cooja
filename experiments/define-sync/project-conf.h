@@ -6,6 +6,9 @@
 #define MAKE_MAC MAKE_MAC_TSCH
 #define MAKE_ROUTING MAKE_ROUTING_RPL_LITE
 
+/* RFC 8180 Section 6.1: MinHopRankIncrease = 256 */
+#define RPL_CONF_MIN_HOPRANKINC 256
+
 #ifndef SYNC_SCHEME
 #define SYNC_SCHEME 1
 #endif
@@ -24,6 +27,14 @@
 
 #ifndef ATP_SUBSLOTS
 #define ATP_SUBSLOTS 2
+#endif
+
+#ifndef NBR_CAP
+#define NBR_CAP 32
+#endif
+
+#ifndef POISSON_ARRIVAL
+#define POISSON_ARRIVAL 0
 #endif
 
 #define TSCH_SCHEDULE_CONF_DEFAULT_LENGTH SF_LENGTH
@@ -46,7 +57,7 @@
 #define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #elif SYNC_SCHEME == 7    /* CSMJ */
 #define TSCH_CONF_EB_PERIOD (5 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
-#else                     /* EASE */
+#else                     /* EASE / Controls */
 #define TSCH_CONF_EB_PERIOD (3 * EB_MULT * SF_LENGTH * (CLOCK_SECOND / 100))
 #endif
 
@@ -74,10 +85,10 @@
 
 #define TSCH_CONF_CHANNEL_SCAN_DURATION (SF_LENGTH * (CLOCK_SECOND / 100))
 
-/* High-capacity tables & ring buffers so dense 500-node networks never drop joins */
-#define NBR_TABLE_CONF_MAX_NEIGHBORS 256
+/* Configurable neighbor table capacity (32 stock vs 64 expanded) */
+#define NBR_TABLE_CONF_MAX_NEIGHBORS NBR_CAP
 #define NETSTACK_MAX_ROUTE_ENTRIES 512
-#define TSCH_QUEUE_CONF_MAX_NEIGHBOR_QUEUES 128
+#define TSCH_QUEUE_CONF_MAX_NEIGHBOR_QUEUES 64
 #define TSCH_SCHEDULE_CONF_MAX_LINKS 64
 #define TSCH_CONF_MAX_INCOMING_PACKETS 32
 #define QUEUEBUF_CONF_NUM 64

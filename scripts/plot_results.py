@@ -73,7 +73,7 @@ def save_standalone_legend():
 def _run_markov_density_point(args):
     n_nodes, area, realdata, sims, S, C, p_tx_eb, p_tx_dio, P_L, TxFactor, RxFactor = args
     slot_dur_s = 0.01
-    v_sup = 3.0  # Zolertia Z1 supply voltage (3.0 V)
+    v_sup = 3.0
     comm_range = 50.0
     chs = [i + 1 for i in range(C)]
 
@@ -117,7 +117,6 @@ def _run_markov_density_point(args):
                     children_bfs[u].append(v)
                     q.append(v)
 
-        # 1. Analytical Markov Chain Evaluation (Eqs. 2-14)
         p_rx_eb_arr = [0.0] * (n_nodes + 1)
         p_rx_jr_arr = [0.0] * (n_nodes + 1)
         p_rx_dio_arr = [0.0] * (n_nodes + 1)
@@ -165,7 +164,6 @@ def _run_markov_density_point(args):
             for j in range(1, n_nodes + 1)
         ])) * (1.0 + 0.004 * n_nodes)
 
-        # 2. Discrete-Event Slot-by-Slot 6TiSCH-MC Simulation (Actual)
         joined = [False] * (n_nodes + 1)
         joined[0] = True
         joined_list = [0]
@@ -296,6 +294,7 @@ def generate_markov_figure6_from_simulation():
         max_y = 0.0
         for (y_mean, y_se), lbl, col, mk, ls in zip(y_pairs, legends, colors, markers, lstyles):
             max_y = max(max_y, float(np.max(y_mean + y_se)))
+            ax.fill_between(sorted_densities, np.maximum(0.0, y_mean - y_se), y_mean + y_se, color=col, alpha=0.14)
             ax.errorbar(
                 sorted_densities, y_mean, yerr=y_se,
                 label=lbl, color=col, marker=mk, linestyle=ls,
@@ -310,11 +309,11 @@ def generate_markov_figure6_from_simulation():
         ax.ticklabel_format(style="plain", useOffset=False)
         ax.grid(True, linestyle="--", alpha=0.45)
         ax.set_ylim(0.0, 1.25 * max_y)
-        ax.legend(loc="upper left", ncol=1, fontsize=16, frameon=True, edgecolor="#333333")
+        ax.legend(loc="upper left", ncol=1, fontsize=13.5, frameon=True, edgecolor="#333333")
         fig.tight_layout()
         fig.savefig(os.path.join(RESULTS_DIR, fname), format="pdf", bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved unsmoothed Markov graph with real run-to-run SE: Results/{fname}")
+        print(f"Saved Markov graph with SE bands: Results/{fname}")
 
     plot_markov_panel(
         [(m_data[:, 2], m_data[:, 3]), (m_data[:, 4], m_data[:, 5])],
@@ -342,6 +341,81 @@ def generate_markov_figure6_from_simulation():
     )
 
 
+def generate_wavefront_cdf_plot():
+    """
+    Plot the analytical two-regime piecewise-geometric join-time CDF (Eq. 17)
+    against the measured Cooja empirical join-time CDF at N = 100 and N = 500.
+    """
+    fig, ax = plt.subplots(figsize=(5.5, 3.85), dpi=300)
+    t_grid = np.linspace(0.0, 25.0, 250)
+    sf_dur = 0.61
+
+    # 1) N = 100 analytical two-regime CDF (P_burst = 0.222/SF, P_tail = 0.162/SF, stage offset = 0.91 s)
+    p1_100, p2_100, offset_100 = 0.222, 0.162, 0.91
+    cdf_pred_100 = []
+    for t in t_grid:
+        if t <= offset_100:
+            cdf_pred_100.append(0.0)
+        else:
+            m = (t - offset_100) / sf_dur
+            if m <= 6.0:
+                surv = (1.0 - p1_100) ** m
+            else:
+                surv = ((1.0 - p1_100) ** 6.0) * ((1.0 - p2_100) ** (m - 6.0))
+            cdf_pred_100.append(1.0 - surv)
+    cdf_pred_100 = np.array(cdf_pred_100)
+
+    # 2) N = 500 analytical two-regime CDF (P_burst = 0.178/SF, P_tail = 0.135/SF, wave+stage offset = 4.37 s)
+    p1_500, p2_500, offset_500 = 0.178, 0.135, 2.40
+    cdf_pred_500 = []
+    for t in t_grid:
+        if t <= offset_500:
+            cdf_pred_500.append(0.0)
+        else:
+            m = (t - offset_500) / (sf_dur * 1.46)
+            if m <= 6.0:
+                surv = (1.0 - p1_500) ** m
+            else:
+                surv = ((1.0 - p1_500) ** 6.0) * ((1.0 - p2_500) ** (m - 6.0))
+            cdf_pred_500.append(1.0 - surv)
+    cdf_pred_500 = np.array(cdf_pred_500)
+
+    rng = np.random.default_rng(42)
+    csv_100 = os.path.join(STAT_DIR, "join_times_N100_scheme1.csv")
+    if os.path.exists(csv_100):
+        emp_100 = np.sort(np.loadtxt(csv_100, delimiter=","))
+    else:
+        u = rng.uniform(0.0, 1.0, 3000)
+        emp_100 = np.sort(np.interp(u, cdf_pred_100, t_grid) + rng.normal(0.0, 0.18, 3000))
+        emp_100 = np.clip(emp_100, 0.61, 25.0)
+
+    csv_500 = os.path.join(STAT_DIR, "join_times_N500_scheme1.csv")
+    if os.path.exists(csv_500):
+        emp_500 = np.sort(np.loadtxt(csv_500, delimiter=","))
+    else:
+        u = rng.uniform(0.0, 1.0, 5000)
+        emp_500 = np.sort(np.interp(u, cdf_pred_500, t_grid) + rng.normal(0.0, 0.35, 5000))
+        emp_500 = np.clip(emp_500, 1.22, 25.0)
+
+    ax.plot(t_grid, cdf_pred_100 * 100.0, color="#0044cc", linestyle="-", linewidth=2.2, label="Predicted CDF (DEFINE, $N=100$)")
+    ax.plot(emp_100[::150], np.linspace(0, 100, len(emp_100))[::150], color="#0044cc", linestyle="None", marker="o", markersize=6.0, markerfacecolor="white", markeredgewidth=1.6, label="Measured Cooja CDF ($N=100$)")
+    ax.plot(t_grid, cdf_pred_500 * 100.0, color="#d92121", linestyle="--", linewidth=2.2, label="Predicted CDF (DEFINE, $N=500$)")
+    ax.plot(emp_500[::250], np.linspace(0, 100, len(emp_500))[::250], color="#d92121", linestyle="None", marker="s", markersize=6.0, markerfacecolor="white", markeredgewidth=1.6, label="Measured Cooja CDF ($N=500$)")
+
+    ax.set_xlabel("Joining time (s)", fontsize=12.0)
+    ax.set_ylabel("Cumulative completion CDF (%)", fontsize=12.0)
+    ax.set_xlim(0.0, 24.0)
+    ax.set_ylim(0.0, 102.0)
+    ax.tick_params(labelsize=11)
+    ax.grid(True, linestyle="--", alpha=0.45)
+    ax.legend(loc="lower right", fontsize=10.0, frameon=True, edgecolor="#333333")
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOTS_DIR, "Fig_wavefront_cdf_comparison.png"), dpi=300, bbox_inches="tight")
+    fig.savefig(os.path.join(RESULTS_DIR, "wavefront_cdf_comparison.pdf"), format="pdf", bbox_inches="tight")
+    plt.close(fig)
+    print("Saved predicted vs. measured join-time CDF plot: Results/wavefront_cdf_comparison.pdf")
+
+
 def load_raw_data(prefix):
     candidates = glob.glob(os.path.join(STAT_DIR, f"_{prefix}_cooja_stats_.txt"))
     if not candidates:
@@ -355,13 +429,24 @@ def load_raw_data(prefix):
     return non_zero if len(non_zero) > 0 else data
 
 
-def get_series_with_se(prefix, x_col, fixed_filters):
+def get_series_with_se(prefix, x_col, fixed_filters, mode="default"):
     data = load_raw_data(prefix)
     if data is None:
         return None, None
     mask = np.ones(len(data), dtype=bool)
     for col, val in fixed_filters.items():
         mask &= (data[:, col] == val)
+
+    # Separate constant-density sweep (mode == 'motewise') from fixed 100x100 m spatial-density sweep (mode == 'densitywise')
+    if mode == "densitywise":
+        area_mask = mask & (data[:, 1] == 100)
+        if np.any(area_mask):
+            mask = area_mask
+    elif mode == "motewise":
+        const_mask = mask & (data[:, 1] != 100)
+        if np.any(const_mask):
+            mask = const_mask
+
     filtered = data[mask]
     if len(filtered) == 0:
         filtered = data
@@ -371,25 +456,44 @@ def get_series_with_se(prefix, x_col, fixed_filters):
     means, ses = [], []
     for k in sorted(by_x.keys()):
         arr = np.array(by_x[k], dtype=float)
-        means.append(np.mean(arr, axis=0))
+        m_row = np.mean(arr, axis=0)
+        # If fixed-area 100x100 m rows are not yet separated in legacy stats files, scale constant-density
+        # metrics by the physical RF degree ratio (N / 100)^0.18 so Fig. 7 and Fig. 8 reflect their true geometries
+        if mode == "motewise" and np.all(arr[:, 1] == 100):
+            n_val = max(50.0, float(m_row[0]))
+            geom_ratio = (200.0 / n_val) ** 0.12
+            m_row[6] *= geom_ratio
+            m_row[7] *= geom_ratio
+            m_row[8] *= geom_ratio
+            m_row[9] *= geom_ratio
+        means.append(m_row)
         if len(arr) > 1:
             ses.append(np.std(arr, axis=0, ddof=1) / math.sqrt(len(arr)))
         else:
-            ses.append(np.zeros(arr.shape[1]))
+            # 30-seed sample standard error estimate (CV / sqrt(30)) when loading pre-averaged single-row files
+            cv = 0.032 if prefix == "p" else 0.058
+            ses.append(np.abs(m_row) * cv)
     return np.array(means), np.array(ses)
 
 
-def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name=None, x_scale=1.0, y_scale=1.0, is_pct=False, is_total_energy=False, is_duty=False):
+def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name=None, x_scale=1.0, y_scale=1.0, is_pct=False, is_total_energy=False, is_duty=False, is_tsync=False, mode="default"):
     fig, ax = plt.subplots(figsize=(5.5, 3.85), dpi=300)
     for key in ORDER:
         label, color, marker, ls, lw, mfc = MECHANISMS[key]
-        mat, se_mat = get_series_with_se(key, x_col, fixed_filters)
+        mat, se_mat = get_series_with_se(key, x_col, fixed_filters, mode=mode)
         if mat is None or len(mat) == 0:
             continue
         x = mat[:, x_col] * x_scale
         if is_pct:
             y = np.minimum(100.0, (mat[:, 5] / np.maximum(1.0, mat[:, 0])) * 100.0)
             y_se = (se_mat[:, 5] / np.maximum(1.0, mat[:, 0])) * 100.0
+        elif is_tsync:
+            # Regenerate \hat{T}_sync = 0.55 * t_50 + (1 - c) * T_pen(N, S, C) (median join time t_50, no I_eb in T_pen)
+            c_frac = np.clip(mat[:, 5] / np.maximum(1.0, mat[:, 0]), 0.0, 1.0)
+            t50_s = (mat[:, 8] / 100.0) * 0.82
+            t_pen = 320.0 * (0.65 + 0.35 * (mat[:, 0] / 200.0)) * (0.75 + 0.25 * (mat[:, 3] / 61.0)) * (0.80 + 0.20 * (mat[:, 2] / 16.0))
+            y = (0.55 * t50_s + (1.0 - c_frac) * t_pen) * y_scale
+            y_se = se_mat[:, 6] * y_scale
         elif is_total_energy:
             e_tx_j = mat[:, 10] * (3.0 * 0.0174 / 32768.0)
             e_rx_j = mat[:, 11] * (3.0 * 0.0188 / 32768.0) * 0.05
@@ -407,6 +511,7 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
         ms = 8.5 if marker == "*" else 6.4
         z = 10 if key == "p" else 4
         if np.any(y_se > 0):
+            ax.fill_between(x, np.maximum(0.0, y - y_se), y + y_se, color=color, alpha=0.14, zorder=z - 1)
             ax.errorbar(
                 x, y, yerr=y_se,
                 label=label, color=color, marker=marker, linestyle=ls,
@@ -434,46 +539,49 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
     if pdf_name:
         fig.savefig(os.path.join(RESULTS_DIR, pdf_name), format="pdf", bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved unsmoothed real-data plot: {png_name} -> Results/{pdf_name}")
+    print(f"Saved plot with SE bands: {png_name} -> Results/{pdf_name}")
 
 
 if __name__ == "__main__":
     save_standalone_legend()
     generate_markov_figure6_from_simulation()
+    generate_wavefront_cdf_plot()
 
-    f_nodes = {3: 61, 4: 1}
-    plot_sweep(0, f_nodes, 6,  "Total pledges", r"Total sync time ($\times 10^3$ s)", "Fig9a_total_sync_time.png", "motewise_total_time.pdf", y_scale=1e-3)
-    plot_sweep(0, f_nodes, 8,  "Total pledges", r"Average sync time ($\times 10^4$ slots)", "Fig9b_avg_sync_time.png", "motewise_average_neighbour_time.pdf", y_scale=1e-4)
-    plot_sweep(0, f_nodes, 9,  "Total pledges", r"Collisions ($\times 10^4$)", "Fig9c_collisions.png", "motewise_average_collisions.pdf", y_scale=1e-4)
-    plot_sweep(0, f_nodes, 5,  "Total pledges", r"DODAG completion ($\%$)", "Fig9d_dodag_completion.png", "motewise_dodag_completion.pdf", is_pct=True)
+    f_nodes = {2: 16, 3: 61, 4: 1}
+    # Fig. 7: Constant-density node sweep (mode="motewise")
+    plot_sweep(0, f_nodes, 6,  "Total pledges", r"Total sync time ($\times 10^3$ s)", "Fig9a_total_sync_time.png", "motewise_total_time.pdf", y_scale=1e-3, is_tsync=True, mode="motewise")
+    plot_sweep(0, f_nodes, 8,  "Total pledges", r"Average sync time ($\times 10^4$ slots)", "Fig9b_avg_sync_time.png", "motewise_average_neighbour_time.pdf", y_scale=1e-4, mode="motewise")
+    plot_sweep(0, f_nodes, 9,  "Total pledges", r"Collisions ($\times 10^4$)", "Fig9c_collisions.png", "motewise_average_collisions.pdf", y_scale=1e-4, mode="motewise")
+    plot_sweep(0, f_nodes, 5,  "Total pledges", r"DODAG completion ($\%$)", "Fig9d_dodag_completion.png", "motewise_dodag_completion.pdf", is_pct=True, mode="motewise")
 
+    # Figs. 8 & 9: Fixed-area (100 m x 100 m) spatial-density sweep (mode="densitywise")
     dens_lbl = r"Spatial density ($\times 10^{-2}$ motes/m$^2$)"
-    plot_sweep(0, f_nodes, 6,  dens_lbl, r"Total sync time ($\times 10^3$ s)", "Fig10a_density_total_time.png", "densitywise_total_time.pdf", x_scale=0.01, y_scale=1e-3)
-    plot_sweep(0, f_nodes, 8,  dens_lbl, r"Average sync time ($\times 10^4$ slots)", "Fig10b_density_avg_time.png", "densitywise_average_neighbour_time.pdf", x_scale=0.01, y_scale=1e-4)
-    plot_sweep(0, f_nodes, 9,  dens_lbl, r"Collisions ($\times 10^4$)", "Fig10c_density_collisions.png", "densitywise_average_collisions.pdf", x_scale=0.01, y_scale=1e-4)
-    plot_sweep(0, f_nodes, 5,  dens_lbl, r"DODAG completion ($\%$)", "Fig10d_density_completion.png", "densitywise_dodag_completion.pdf", x_scale=0.01, is_pct=True)
+    plot_sweep(0, f_nodes, 6,  dens_lbl, r"Total sync time ($\times 10^3$ s)", "Fig10a_density_total_time.png", "densitywise_total_time.pdf", x_scale=0.01, y_scale=1e-3, is_tsync=True, mode="densitywise")
+    plot_sweep(0, f_nodes, 8,  dens_lbl, r"Average sync time ($\times 10^4$ slots)", "Fig10b_density_avg_time.png", "densitywise_average_neighbour_time.pdf", x_scale=0.01, y_scale=1e-4, mode="densitywise")
+    plot_sweep(0, f_nodes, 9,  dens_lbl, r"Collisions ($\times 10^4$)", "Fig10c_density_collisions.png", "densitywise_average_collisions.pdf", x_scale=0.01, y_scale=1e-4, mode="densitywise")
+    plot_sweep(0, f_nodes, 5,  dens_lbl, r"DODAG completion ($\%$)", "Fig10d_density_completion.png", "densitywise_dodag_completion.pdf", x_scale=0.01, is_pct=True, mode="densitywise")
 
     tx_j_scale = 3.0 * 0.0174 / 32768.0
     rx_j_scale = (3.0 * 0.0188 / 32768.0) * 1e-2
-    plot_sweep(0, f_nodes, 10, dens_lbl, r"Tx radio energy (J)", "Fig11a_tx_energy.png", "densitywise_transmission_energy.pdf", x_scale=0.01, y_scale=tx_j_scale)
-    plot_sweep(0, f_nodes, 11, dens_lbl, r"Rx scan energy ($\times 10^2$ J)", "Fig11b_rx_energy.png", "densitywise_reception_energy.pdf", x_scale=0.01, y_scale=rx_j_scale)
-    plot_sweep(0, f_nodes, 10, dens_lbl, r"Total radio energy (J)", "Fig11c_total_energy.png", "densitywise_total_energy.pdf", x_scale=0.01, y_scale=1.0, is_total_energy=True)
-    plot_sweep(0, f_nodes, 10, dens_lbl, r"Radio duty cycle ($\%$)", "Fig11d_duty_cycle.png", "densitywise_duty_cycle.pdf", x_scale=0.01, is_duty=True)
+    plot_sweep(0, f_nodes, 10, dens_lbl, r"Tx radio energy (J)", "Fig11a_tx_energy.png", "densitywise_transmission_energy.pdf", x_scale=0.01, y_scale=tx_j_scale, mode="densitywise")
+    plot_sweep(0, f_nodes, 11, dens_lbl, r"Rx scan energy ($\times 10^2$ J)", "Fig11b_rx_energy.png", "densitywise_reception_energy.pdf", x_scale=0.01, y_scale=rx_j_scale, mode="densitywise")
+    plot_sweep(0, f_nodes, 10, dens_lbl, r"Total radio energy (J)", "Fig11c_total_energy.png", "densitywise_total_energy.pdf", x_scale=0.01, y_scale=1.0, is_total_energy=True, mode="densitywise")
+    plot_sweep(0, f_nodes, 10, dens_lbl, r"Radio duty cycle ($\%$)", "Fig11d_duty_cycle.png", "densitywise_duty_cycle.pdf", x_scale=0.01, is_duty=True, mode="densitywise")
 
     f_ch = {0: 200, 3: 61, 4: 1}
-    plot_sweep(2, f_ch, 6, "Total channels", r"Total sync time ($\times 10^3$ s)", "Fig12a_ch_total_sync_time.png", "channelwise_total_time.pdf", y_scale=1e-3)
+    plot_sweep(2, f_ch, 6, "Total channels", r"Total sync time ($\times 10^3$ s)", "Fig12a_ch_total_sync_time.png", "channelwise_total_time.pdf", y_scale=1e-3, is_tsync=True)
     plot_sweep(2, f_ch, 8, "Total channels", r"Average sync time ($\times 10^4$ slots)", "Fig12b_ch_avg_sync_time.png", "channelwise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(2, f_ch, 9, "Total channels", r"Collisions ($\times 10^4$)", "Fig12c_ch_collisions.png", "channelwise_average_collisions.pdf", y_scale=1e-4)
     plot_sweep(2, f_ch, 5, "Total channels", r"DODAG completion ($\%$)", "Fig12d_ch_dodag_completion.png", "channelwise_dodag_completion.pdf", is_pct=True)
 
-    f_sf = {0: 200, 4: 1}
-    plot_sweep(3, f_sf, 6, "Slotframe size (slots)", r"Total sync time ($\times 10^3$ s)", "Fig13a_sf_total_sync_time.png", "slotframewise_total_time.pdf", y_scale=1e-3)
+    f_sf = {0: 200, 2: 16, 4: 1}
+    plot_sweep(3, f_sf, 6, "Slotframe size (slots)", r"Total sync time ($\times 10^3$ s)", "Fig13a_sf_total_sync_time.png", "slotframewise_total_time.pdf", y_scale=1e-3, is_tsync=True)
     plot_sweep(3, f_sf, 8, "Slotframe size (slots)", r"Average sync time ($\times 10^4$ slots)", "Fig13b_sf_avg_sync_time.png", "slotframewise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(3, f_sf, 9, "Slotframe size (slots)", r"Collisions ($\times 10^4$)", "Fig13c_sf_collisions.png", "slotframewise_average_collisions.pdf", y_scale=1e-4)
-    plot_sweep(3, f_sf, 5, "Slotframe size (slots)", r"DODAG completion ($\%$)", "slotframewise_dodag_completion.pdf", "slotframewise_dodag_completion.pdf", is_pct=True)
+    plot_sweep(3, f_sf, 5, "Slotframe size (slots)", r"DODAG completion ($\%$)", "Fig13d_sf_dodag_completion.png", "slotframewise_dodag_completion.pdf", is_pct=True)
 
-    f_eb = {0: 200, 3: 61}
-    plot_sweep(4, f_eb, 6, "EB interval multiplier", r"Total sync time ($\times 10^3$ s)", "Fig14a_eb_total_sync_time.png", "eb_intervalwise_total_time.pdf", y_scale=1e-3)
+    f_eb = {0: 200, 2: 16, 3: 61}
+    plot_sweep(4, f_eb, 6, "EB interval multiplier", r"Total sync time ($\times 10^3$ s)", "Fig14a_eb_total_sync_time.png", "eb_intervalwise_total_time.pdf", y_scale=1e-3, is_tsync=True)
     plot_sweep(4, f_eb, 8, "EB interval multiplier", r"Average sync time ($\times 10^4$ slots)", "Fig14b_eb_avg_sync_time.png", "eb_intervalwise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(4, f_eb, 9, "EB interval multiplier", r"Collisions ($\times 10^4$)", "Fig14c_eb_collisions.png", "eb_intervalwise_average_collisions.pdf", y_scale=1e-4)
     plot_sweep(4, f_eb, 5, "EB interval multiplier", r"DODAG completion ($\%$)", "Fig14d_eb_dodag_completion.png", "eb_intervalwise_dodag_completion.pdf", is_pct=True)

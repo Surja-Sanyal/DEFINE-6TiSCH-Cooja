@@ -100,12 +100,13 @@ jobs:
           for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_*.txt", recursive=True)):
               fname = os.path.basename(filepath)
               with open(filepath, "r") as f:
-                  for line in f:
+                  for idx, line in enumerate(f):
                       line = line.strip()
                       if line:
                           parts = [p.strip() for p in line.split(",") if p.strip()]
                           if len(parts) >= 10 and float(parts[9]) > 0:
-                              key = (int(float(parts[0])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])))
+                              # Include area (parts[1]) and seed row index so multi-seed and fixed-area vs constant-density rows are preserved
+                              key = (int(float(parts[0])), int(float(parts[1])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])), idx)
                               merged.setdefault(fname, {})[key] = line
 
           for fname, row_dict in merged.items():
@@ -113,7 +114,7 @@ jobs:
               out_path = os.path.join("Statistics", fname)
               with open(out_path, "w") as f:
                   f.write("\n".join(sorted_lines) + "\n")
-              print(f"Merged {len(sorted_lines)} valid non-zero rows into {out_path}")
+              print(f"Merged {len(sorted_lines)} valid non-zero seed rows into {out_path}")
           '
 
           if [ -f "scripts/plot_results.py" ]; then
@@ -143,4 +144,4 @@ jobs:
           fi
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, Fig 6, and Figs 9-14 PDFs" && git push origin main)
+          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, CDF plot, and Figs 7-12 PDFs" && git push origin main)
