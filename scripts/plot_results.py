@@ -294,7 +294,7 @@ def generate_markov_figure6_from_simulation():
         max_y = 0.0
         for (y_mean, y_se), lbl, col, mk, ls in zip(y_pairs, legends, colors, markers, lstyles):
             max_y = max(max_y, float(np.max(y_mean + y_se)))
-            ax.fill_between(sorted_densities, np.maximum(0.0, y_mean - y_se), y_mean + y_se, color=col, alpha=0.14)
+            # ax.fill_between(sorted_densities, np.maximum(0.0, y_mean - y_se), y_mean + y_se, color=col, alpha=0.14)
             ax.errorbar(
                 sorted_densities, y_mean, yerr=y_se,
                 label=lbl, color=col, marker=mk, linestyle=ls,
@@ -511,7 +511,7 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
         ms = 8.5 if marker == "*" else 6.4
         z = 10 if key == "p" else 4
         if np.any(y_se > 0):
-            ax.fill_between(x, np.maximum(0.0, y - y_se), y + y_se, color=color, alpha=0.14, zorder=z - 1)
+            # ax.fill_between(x, np.maximum(0.0, y - y_se), y + y_se, color=color, alpha=0.14, zorder=z - 1)
             ax.errorbar(
                 x, y, yerr=y_se,
                 label=label, color=color, marker=marker, linestyle=ls,
