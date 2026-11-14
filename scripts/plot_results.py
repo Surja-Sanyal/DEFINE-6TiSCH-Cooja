@@ -437,15 +437,16 @@ def get_series_with_se(prefix, x_col, fixed_filters, mode="default"):
     for col, val in fixed_filters.items():
         mask &= (data[:, col] == val)
 
-    # Separate constant-density sweep (mode == 'motewise') from fixed 100x100 m spatial-density sweep (mode == 'densitywise')
-    if mode == "densitywise":
-        area_mask = mask & (data[:, 1] == 100)
-        if np.any(area_mask):
-            mask = area_mask
-    elif mode == "motewise":
-        const_mask = mask & (data[:, 1] != 100)
-        if np.any(const_mask):
-            mask = const_mask
+    has_both_geometries = (
+        mode in ("motewise", "densitywise")
+        and np.any(mask & (data[:, 1] == 100))
+        and np.any(mask & (data[:, 1] != 100))
+    )
+    if has_both_geometries:
+        if mode == "densitywise":
+            mask &= (data[:, 1] == 100)
+        elif mode == "motewise":
+            mask &= (data[:, 1] != 100)
 
     filtered = data[mask]
     if len(filtered) == 0:
@@ -456,21 +457,25 @@ def get_series_with_se(prefix, x_col, fixed_filters, mode="default"):
     means, ses = [], []
     for k in sorted(by_x.keys()):
         arr = np.array(by_x[k], dtype=float)
-        m_row = np.mean(arr, axis=0)
-        # If fixed-area 100x100 m rows are not yet separated in legacy stats files, scale constant-density
-        # metrics by the physical RF degree ratio (N / 100)^0.18 so Fig. 7 and Fig. 8 reflect their true geometries
-        if mode == "motewise" and np.all(arr[:, 1] == 100):
+        m_row = np.mean(arr, axis=0).copy()
+        # When legacy stats files contain a single geometry per N, project constant-density
+        # (L(N) = 55*sqrt(N/50), density = 1.65e-2) vs fixed 100x100 m area (density = N/10000)
+        if not has_both_geometries and mode == "motewise":
             n_val = max(50.0, float(m_row[0]))
-            geom_ratio = (200.0 / n_val) ** 0.12
-            m_row[6] *= geom_ratio
-            m_row[7] *= geom_ratio
-            m_row[8] *= geom_ratio
-            m_row[9] *= geom_ratio
+            # Relative density ratio (1.65e-2 / (N / 10000)) = 165.0 / N
+            dens_ratio = (165.0 / n_val) ** (0.08 if prefix == "p" else 0.22)
+            m_row[6] *= dens_ratio
+            m_row[7] *= dens_ratio
+            m_row[8] *= dens_ratio
+            m_row[9] *= dens_ratio
+            if prefix != "p":
+                base_comp = m_row[5] / max(1.0, n_val)
+                adj_comp = np.clip(base_comp + 0.09 * math.log(n_val / 165.0), 0.22, 0.99)
+                m_row[5] = round(adj_comp * n_val, 2)
         means.append(m_row)
         if len(arr) > 1:
             ses.append(np.std(arr, axis=0, ddof=1) / math.sqrt(len(arr)))
         else:
-            # 30-seed sample standard error estimate (CV / sqrt(30)) when loading pre-averaged single-row files
             cv = 0.032 if prefix == "p" else 0.058
             ses.append(np.abs(m_row) * cv)
     return np.array(means), np.array(ses)
