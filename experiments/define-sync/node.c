@@ -1,10 +1,12 @@
 #include "contiki.h"
 #include "net/netstack.h"
+#include "net/linkaddr.h"
 #include "net/mac/tsch/tsch.h"
 #include "net/mac/tsch/tsch-queue.h"
 #include "net/mac/tsch/tsch-schedule.h"
 #include "net/routing/routing.h"
 #include "net/routing/rpl-lite/rpl.h"
+#include "net/routing/rpl-lite/rpl-neighbor.h"
 #include "net/ipv6/uip-ds6-nbr.h"
 #include "net/link-stats.h"
 #include "sys/energest.h"
@@ -24,6 +26,11 @@ static uint32_t eb_tx_counter = 0;
 static uint32_t slot_callbacks = 0;
 static uint32_t boot_asn = 0;
 
+/* Real Energest baseline snapshots taken at join instant */
+static uint64_t join_tx_ticks = 0;
+static uint64_t join_rx_ticks = 0;
+static uint64_t boot_rx_ticks = 0;
+
 /* DEFINE 10-byte static .bss state + 16-byte .rodata lookup table */
 static uint32_t join_asn = 0;
 static uint16_t prev_rank = 0;
@@ -33,8 +40,9 @@ static uint8_t phi_u = 0;
 static uint8_t sync_wait_cnt = 0;
 static uint8_t parent_switched_flag = 0;
 static uint32_t last_sync_asn = 0;
+static uint8_t cached_h_u = 0;
 
-/* 16-entry uint8 lookup table for exp(-gamma) scaled by 255 (gamma in steps of 0.25) */
+/* 16-entry uint8 lookup table for exp(-gamma) scaled by 255 (P_min = 0.15 -> 38/255) */
 static const uint8_t exp_lut[16] = {
   255, 199, 155, 120, 94, 73, 57, 44, 38, 38, 38, 38, 38, 38, 38, 38
 };
@@ -57,6 +65,34 @@ isqrt_u16(uint16_t val)
     bit >>= 2;
   }
   return res;
+}
+
+static uint16_t
+get_preferred_parent_id(void)
+{
+  if(curr_instance.used && curr_instance.dag.preferred_parent != NULL) {
+    const linkaddr_t *ll = rpl_neighbor_get_lladdr(curr_instance.dag.preferred_parent);
+    if(ll != NULL) {
+      return (uint16_t)ll->u8[LINKADDR_SIZE - 1];
+    }
+  }
+  return 0;
+}
+
+static uint32_t
+get_unicast_tx_retries(void)
+{
+  uint32_t retries = 0;
+  uip_ds6_nbr_t *nbr = uip_ds6_nbr_head();
+  while(nbr != NULL) {
+    const linkaddr_t *ll = uip_ds6_nbr_get_ll(nbr);
+    const struct link_stats *stats = link_stats_from_lladdr(ll);
+    if(stats != NULL && stats->etx > 128) {
+      retries += (uint32_t)((stats->etx - 128) / 64);
+    }
+    nbr = uip_ds6_nbr_next(nbr);
+  }
+  return retries;
 }
 
 void
@@ -100,42 +136,53 @@ safe_set_eb_period(clock_time_t period)
   tsch_set_eb_period(period);
 }
 
-static void
-compute_adv_metrics(uint32_t *tx_out, uint32_t *coll_out)
+static uint8_t
+compute_adapt_q_u8(uint32_t asn_now, int nbrs, uint8_t use_age, uint8_t use_dens, uint8_t use_phase)
 {
-  energest_flush();
-  uint32_t tx_ticks = (uint32_t)energest_type_time(ENERGEST_TYPE_TRANSMIT);
-  int nbrs = uip_ds6_nbr_num();
-  uint32_t eff_nbrs = (uint32_t)((nbrs > 0) ? nbrs : 1);
-  uint32_t asn_now = tsch_current_asn.ls4b;
-  uint32_t active_slots = (asn_now > join_asn) ? (asn_now - join_asn) : 0;
-  uint32_t active_sf = (active_slots / SF_LENGTH) + 1;
+  uint32_t phase_slots = use_phase ? ((uint32_t)phi_u * (uint32_t)SF_LENGTH) : 0;
+  if(node_id != 1 && asn_now < join_asn + phase_slots) {
+    return 0;
+  }
+  uint32_t delta_asn = use_age
+                         ? ((asn_now > join_asn + phase_slots) ? (asn_now - join_asn - phase_slots) : 0)
+                         : (uint32_t)(4 * SF_LENGTH);
+  uint16_t eff_n = use_dens ? (uint16_t)(1 + (nbrs > 0 ? nbrs : 0)) : 4;
+  uint16_t sqrt_scaled = isqrt_u16((uint16_t)(eff_n * 100));
+  uint32_t gamma_q2 = (delta_asn * sqrt_scaled * 4UL) / ((uint32_t)NUM_CHANNELS * (uint32_t)SF_LENGTH * 10UL);
+  uint8_t lut_idx = (gamma_q2 > 15) ? 15 : (uint8_t)gamma_q2;
+  return (exp_lut[lut_idx] > 38) ? exp_lut[lut_idx] : 38;
+}
 
-#if SYNC_SCHEME == 1   /* DEFINE: ASSIGN + ADAPT (P_min=0.15) */
-  *coll_out = eff_nbrs * 1 + (active_sf / 35) + (eb_tx_counter / 15);
-  *tx_out   = (tx_ticks > 0) ? (tx_ticks / 4 + (eb_tx_counter + 1) * 28) : ((eb_tx_counter + 1) * 28 + active_sf * eff_nbrs);
-#elif SYNC_SCHEME == 2 /* 6TiSCH-MC */
-  *coll_out = eff_nbrs * 15 + (active_sf / 4) + (eb_tx_counter * 2);
-  *tx_out   = (eb_tx_counter + 1) * 190 + active_sf * eff_nbrs * 16;
-#elif SYNC_SCHEME == 3 /* EDBA-SA */
-  *coll_out = eff_nbrs * 10 + (active_sf / 7) + eb_tx_counter;
-  *tx_out   = (eb_tx_counter + 1) * 140 + active_sf * eff_nbrs * 11;
-#elif SYNC_SCHEME == 4 /* ECV-SA */
-  *coll_out = eff_nbrs * 8 + (active_sf / 9) + (eb_tx_counter * 3) / 4;
-  *tx_out   = (eb_tx_counter + 1) * 120 + active_sf * eff_nbrs * 9;
-#elif SYNC_SCHEME == 5 /* ATP: 2 */
-  *coll_out = eff_nbrs * 7 + (active_sf / 10) + eb_tx_counter;
-  *tx_out   = (eb_tx_counter + 1) * 155 * ATP_SUBSLOTS + active_sf * eff_nbrs * 13;
-#elif SYNC_SCHEME == 6 /* TRGB */
-  *coll_out = eff_nbrs * 6 + (active_sf / 12) + (eb_tx_counter / 2);
-  *tx_out   = (eb_tx_counter + 1) * 105 + active_sf * eff_nbrs * 8;
-#elif SYNC_SCHEME == 7 /* CSMJ */
-  *coll_out = eff_nbrs * 12 + (active_sf / 5) + (eb_tx_counter * 3) / 2;
-  *tx_out   = (eb_tx_counter + 1) * 165 + active_sf * eff_nbrs * 14;
-#else                  /* EASE */
-  *coll_out = eff_nbrs * 4 + (active_sf / 16) + (eb_tx_counter / 4);
-  *tx_out   = (eb_tx_counter + 1) * 85 + active_sf * eff_nbrs * 6;
-#endif
+static void
+update_rank_tier(uint8_t do_immediate_refresh, uint8_t do_guard, uint8_t use_id_hash)
+{
+  uint16_t rank_inc = 256;
+  uint16_t cur_rank = (curr_instance.used && curr_instance.dag.rank >= rank_inc)
+                        ? (uint16_t)curr_instance.dag.rank
+                        : (uint16_t)((node_id == 1) ? 256 : 512);
+  uint16_t diff_rank = (cur_rank > prev_rank) ? (cur_rank - prev_rank) : (prev_rank - cur_rank);
+
+  if((do_immediate_refresh && parent_switched_flag) || prev_rank == 0 || diff_rank >= (rank_inc / 2)) {
+    uint16_t raw_h = (cur_rank >= rank_inc) ? ((cur_rank / rank_inc) - 1) : 0;
+    cached_h_u = (raw_h > 255) ? 255 : (uint8_t)raw_h;
+    prev_rank = cur_rank;
+    uint16_t pid = get_preferred_parent_id();
+    if(use_id_hash) {
+      parent_ch_offset = (uint8_t)(((uint32_t)pid * 2654435761UL) % NUM_CHANNELS);
+    } else {
+      parent_ch_offset = (cached_h_u > 0) ? (uint8_t)((cached_h_u - 1) % NUM_CHANNELS) : 0;
+    }
+    parent_switched_flag = 0;
+  }
+
+  if(use_id_hash) {
+    ch_offset_u = (uint8_t)(((uint32_t)node_id * 2654435761UL) % NUM_CHANNELS);
+  } else {
+    ch_offset_u = (uint8_t)(cached_h_u % NUM_CHANNELS);
+  }
+  if(do_guard && node_id != 1 && ch_offset_u == parent_ch_offset) {
+    ch_offset_u = (uint8_t)((ch_offset_u + 1) % NUM_CHANNELS);
+  }
 }
 
 static void
@@ -155,124 +202,209 @@ apply_scheme_schedule(void)
     base_sf_dur = 4;
   }
 
-  clock_time_t period = base_sf_dur;
   uint8_t link_opts = LINK_OPTION_RX | LINK_OPTION_TX | LINK_OPTION_SHARED;
+  uint8_t tx_prob_u8 = 255;
+  uint8_t enable_keepalive = 0;
+  uint8_t subslots = 1;
 
-#if SYNC_SCHEME == 1 /* 1: DEFINE (ASSIGN + ADAPT + 3-State Arbiter) */
-  uint16_t rank_inc = 256;
-  uint16_t cur_rank = (curr_instance.used && curr_instance.dag.rank >= rank_inc)
-                        ? (uint16_t)curr_instance.dag.rank
-                        : (uint16_t)((node_id == 1) ? 256 : 512);
-  uint16_t diff_rank = (cur_rank > prev_rank) ? (cur_rank - prev_rank) : (prev_rank - cur_rank);
-  static uint8_t h_u = 0;
+  switch(SYNC_SCHEME) {
+    case 1:  /* DEFINE (Full) */
+    case 26: /* DEFINE (Lossy MRM 85% PRR) */
+    case 27: /* DEFINE (Reversed Sweep Order) */
+    case 28: /* DEFINE (Poisson Arrivals) */
+      update_rank_tier(1, 1, 0);
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 1);
+      enable_keepalive = 1;
+      break;
 
-  if(parent_switched_flag || prev_rank == 0 || diff_rank >= (rank_inc / 2)) {
-    uint16_t raw_h = (cur_rank >= rank_inc) ? ((cur_rank / rank_inc) - 1) : 0;
-    h_u = (raw_h > 255) ? 255 : (uint8_t)raw_h;
-    prev_rank = cur_rank;
-    parent_ch_offset = (h_u > 0) ? (uint8_t)((h_u - 1) % NUM_CHANNELS) : 0;
-    parent_switched_flag = 0;
+    case 25: /* DEFINE (No Keepalive) */
+      update_rank_tier(1, 1, 0);
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 1);
+      enable_keepalive = 0;
+      break;
+
+    case 14: /* EASE + ADAPT (Grafted, Alg. 1+KA) */
+      update_rank_tier(0, 0, 1);
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 1);
+      enable_keepalive = 1;
+      break;
+
+    case 15: /* EBMC + ADAPT (Grafted, Alg. 1+KA) */
+      ch_offset_u = (uint8_t)((node_id % (NUM_CHANNELS / 2)) * 2 + (sf_num & 1));
+      parent_ch_offset = (uint8_t)((get_preferred_parent_id() % (NUM_CHANNELS / 2)) * 2);
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 1);
+      enable_keepalive = 1;
+      break;
+
+    case 16: /* ID-Hash + Guard + ADAPT (Control) */
+      update_rank_tier(1, 1, 1);
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 1);
+      enable_keepalive = 1;
+      break;
+
+    case 17: /* ASSIGN (Hysteresis Only, No Refresh/Guard, 1S) */
+      update_rank_tier(0, 0, 0);
+      tx_prob_u8 = 217; /* 0.85 EB/SF after keepalive */
+      enable_keepalive = 1;
+      break;
+
+    case 18: /* ASSIGN (Refresh Only, No Guard, 1S) */
+      update_rank_tier(1, 0, 0);
+      tx_prob_u8 = 217;
+      enable_keepalive = 1;
+      break;
+
+    case 19: /* ASSIGN (Guard Only, Hysteresis, 1S) */
+      update_rank_tier(0, 1, 0);
+      tx_prob_u8 = 217;
+      enable_keepalive = 1;
+      break;
+
+    case 20: /* ASSIGN-Only (Refresh + Guard, 1S) */
+      update_rank_tier(1, 1, 0);
+      tx_prob_u8 = 217;
+      enable_keepalive = 1;
+      break;
+
+    case 21: /* ADAPT (Age Only, Cell 0) */
+      ch_offset_u = 0;
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 0, 0);
+      break;
+
+    case 22: /* ADAPT (Density Only, Cell 0) */
+      ch_offset_u = 0;
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 0, 1, 0);
+      break;
+
+    case 23: /* ADAPT (No Phase, Cell 0) */
+      ch_offset_u = 0;
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 0);
+      break;
+
+    case 24: /* ADAPT-Only (Full, Cell 0) */
+      ch_offset_u = 0;
+      tx_prob_u8 = compute_adapt_q_u8(asn_now, nbrs, 1, 1, 1);
+      break;
+
+    case 2:  /* 6TiSCH-MC (1S) */
+      ch_offset_u = 0;
+      tx_prob_u8 = 255;
+      break;
+
+    case 11: /* 6TiSCH-MC (Tuned 4S) */
+      ch_offset_u = 0;
+      tx_prob_u8 = 64; /* 0.25 EB/SF */
+      break;
+
+    case 12: /* 6TiSCH-MC (Default 26S) */
+      ch_offset_u = 0;
+      tx_prob_u8 = 10; /* 0.04 EB/SF */
+      break;
+
+    case 3:  /* EDBA-SA */
+      ch_offset_u = (uint8_t)(random_rand() % NUM_CHANNELS);
+      tx_prob_u8 = 255;
+      break;
+
+    case 4:  /* ECV-SA */
+      ch_offset_u = (uint8_t)(node_id % NUM_CHANNELS);
+      tx_prob_u8 = 255;
+      break;
+
+    case 5:  /* ATP: 2 */
+      ch_offset_u = (uint8_t)((sf_num % ATP_SUBSLOTS + 1) % NUM_CHANNELS);
+      tx_prob_u8 = 255;
+      subslots = ATP_SUBSLOTS;
+      break;
+
+    case 6:  /* TRGB */
+    {
+      uint8_t rgb_phase = (uint8_t)(sf_num % 3);
+      uint8_t sub_band = (NUM_CHANNELS >= 3) ? (NUM_CHANNELS / 3) : 1;
+      ch_offset_u = (uint8_t)((rgb_phase * sub_band + (node_id % sub_band)) % NUM_CHANNELS);
+      tx_prob_u8 = (rgb_phase == 0) ? 204 : ((rgb_phase == 1) ? 102 : 26); /* (0.8, 0.4, 0.1) */
+      break;
+    }
+
+    case 7:  /* CSMJ */
+    {
+      uint8_t csmj_be = (nbrs > 8) ? 3 : ((nbrs > 3) ? 2 : 1);
+      ch_offset_u = 0;
+      tx_prob_u8 = (uint8_t)(255 >> csmj_be);
+      break;
+    }
+
+    case 8:  /* EASE */
+      ch_offset_u = (uint8_t)(((uint32_t)node_id * 2654435761UL) % NUM_CHANNELS);
+      tx_prob_u8 = (uint8_t)(255 / (1 + (nbrs > 0 ? nbrs : 1)));
+      if(tx_prob_u8 < 38) {
+        tx_prob_u8 = 38;
+      }
+      break;
+
+    case 9:  /* Pairing [19] */
+    {
+      uint8_t base_pair = (uint8_t)((node_id / 2) % (NUM_CHANNELS / 2));
+      ch_offset_u = (sf_num & 1) ? (uint8_t)(base_pair + (NUM_CHANNELS / 2)) : base_pair;
+      tx_prob_u8 = 255;
+      break;
+    }
+
+    case 10: /* EBMC (1S) [20] */
+      ch_offset_u = (uint8_t)((node_id % (NUM_CHANNELS / 2)) * 2);
+      tx_prob_u8 = 128; /* 0.50 EB/SF (alternating EB vs DIO sub-offsets) */
+      break;
+
+    case 13: /* EBMC (Tuned 2S) */
+      ch_offset_u = (uint8_t)((node_id % (NUM_CHANNELS / 2)) * 2);
+      tx_prob_u8 = 64;  /* 0.25 EB/SF */
+      break;
+
+    default:
+      ch_offset_u = 0;
+      tx_prob_u8 = 255;
+      break;
   }
 
-  ch_offset_u = (uint8_t)(h_u % NUM_CHANNELS);
-  if(node_id != 1 && ch_offset_u == parent_ch_offset) {
-    ch_offset_u = (uint8_t)((h_u + 1) % NUM_CHANNELS);
-  }
-
-  uint32_t phase_slots = (uint32_t)phi_u * (uint32_t)SF_LENGTH;
-  uint8_t q_u8 = 38; /* P_min_eb = 0.15 -> 38 / 255 */
-  if(node_id != 1 && asn_now < join_asn + phase_slots) {
-    q_u8 = 0;
-  } else {
-    uint32_t delta_asn = (asn_now > join_asn + phase_slots) ? (asn_now - join_asn - phase_slots) : 0;
-    uint16_t sqrt_scaled = isqrt_u16((uint16_t)((1 + (nbrs > 0 ? nbrs : 0)) * 100));
-    uint32_t gamma_q2 = (delta_asn * sqrt_scaled * 4UL) / ((uint32_t)NUM_CHANNELS * (uint32_t)SF_LENGTH * 10UL);
-    uint8_t lut_idx = (gamma_q2 > 15) ? 15 : (uint8_t)gamma_q2;
-    q_u8 = (exp_lut[lut_idx] > 38) ? exp_lut[lut_idx] : 38;
-  }
-
-  /* 3-State Single-Radio Timeslot-0 Arbiter */
-  uint32_t sync_age_slots = (asn_now > last_sync_asn) ? (asn_now - last_sync_asn) : 0;
-  if(node_id != 1 && sync_age_slots >= 3000UL) { /* T_sync_max = 30 s = 3000 slots */
-    if(sync_wait_cnt < 20) {
-      sync_wait_cnt++;
-      set_slot0_link(parent_ch_offset, LINK_OPTION_RX | LINK_OPTION_TIME_KEEPING);
-      return;
-    } else {
-      parent_ch_offset = (uint8_t)((parent_ch_offset + 1) % NUM_CHANNELS);
-      sync_wait_cnt = 0;
-      last_sync_asn = asn_now;
+  if(enable_keepalive && node_id != 1) {
+    uint32_t sync_age_slots = (asn_now > last_sync_asn) ? (asn_now - last_sync_asn) : 0;
+    if(sync_age_slots >= 3000UL) {
+      if(sync_wait_cnt < 20) {
+        sync_wait_cnt++;
+        set_slot0_link(parent_ch_offset, LINK_OPTION_RX | LINK_OPTION_TIME_KEEPING);
+        return;
+      } else {
+        parent_ch_offset = (uint8_t)((parent_ch_offset + 1) % NUM_CHANNELS);
+        sync_wait_cnt = 0;
+        last_sync_asn = asn_now;
+      }
     }
   }
 
   uint8_t r_draw = (uint8_t)(random_rand() & 0xFF);
-  if(r_draw <= q_u8) {
+  if(r_draw <= tx_prob_u8) {
     set_slot0_link(ch_offset_u, LINK_OPTION_TX);
-    period = base_sf_dur;
+    safe_set_eb_period(base_sf_dur);
+    eb_tx_counter += subslots;
+    uint16_t pid = get_preferred_parent_id();
+    LOG_INFO("CSV_SLOT0_TX,id=%u,sf=%lu,ch=%u,tier=%u,parent=%u,sub=%u\n",
+             (unsigned)node_id, (unsigned long)sf_num, (unsigned)ch_offset_u,
+             (unsigned)cached_h_u, (unsigned)pid, (unsigned)subslots);
   } else {
-    set_slot0_link(0, LINK_OPTION_RX | LINK_OPTION_TX | LINK_OPTION_SHARED);
-    period = (clock_time_t)((base_sf_dur * 255UL) / (q_u8 > 0 ? q_u8 : 38));
+    set_slot0_link(0, link_opts);
+    safe_set_eb_period(base_sf_dur * 16);
   }
 
-#elif SYNC_SCHEME == 2 /* 2: 6TiSCH-MC */
-  ch_offset_u = 0;
-  period = base_sf_dur * 6;
-  set_slot0_link(ch_offset_u, link_opts);
-
-#elif SYNC_SCHEME == 3 /* 3: EDBA-SA */
-  ch_offset_u = (uint8_t)(random_rand() % NUM_CHANNELS);
-  period = base_sf_dur * 4;
-  set_slot0_link(ch_offset_u, link_opts);
-
-#elif SYNC_SCHEME == 4 /* 4: ECV-SA */
-  ch_offset_u = (uint8_t)(node_id % NUM_CHANNELS);
-  period = (base_sf_dur * 7) / 2;
-  set_slot0_link(ch_offset_u, link_opts);
-
-#elif SYNC_SCHEME == 5 /* 5: ATP */
-  ch_offset_u = (uint8_t)((sf_num % ATP_SUBSLOTS + 1) % NUM_CHANNELS);
-  period = (base_sf_dur * 9) / ATP_SUBSLOTS;
-  set_slot0_link(ch_offset_u, link_opts);
-
-#elif SYNC_SCHEME == 6 /* 6: TRGB */
-  uint8_t rgb_phase = (uint8_t)(sf_num % 3);
-  uint8_t sub_band = (NUM_CHANNELS >= 3) ? (NUM_CHANNELS / 3) : 1;
-  ch_offset_u = (uint8_t)((rgb_phase * sub_band + (node_id % sub_band)) % NUM_CHANNELS);
-  double p_trgb = (rgb_phase == 0) ? 0.45 : ((rgb_phase == 1) ? 0.30 : 0.20);
-  period = (clock_time_t)((double)base_sf_dur / p_trgb);
-  set_slot0_link(ch_offset_u, link_opts);
-
-#elif SYNC_SCHEME == 7 /* 7: CSMJ */
-  uint8_t csmj_be = (nbrs > 4) ? 3 : 2;
-  ch_offset_u = 0;
-  period = base_sf_dur * (1 << csmj_be);
-  set_slot0_link(ch_offset_u, link_opts);
-
-#elif SYNC_SCHEME == 8 /* 8: EASE */
-  ch_offset_u = (uint8_t)(((uint32_t)node_id * 2654435761UL) % NUM_CHANNELS);
-  double p_ease = 0.45 / (1.0 + 0.15 * (double)nbrs);
-  if(p_ease < 0.25) {
-    p_ease = 0.25;
-  }
-  period = (clock_time_t)((double)base_sf_dur / p_ease);
-  set_slot0_link(ch_offset_u, link_opts);
-#endif
-
-  safe_set_eb_period(period);
-
-  uint32_t sf_step = (uint32_t)(period / base_sf_dur);
-  if(sf_step < 1) {
-    sf_step = 1;
-  }
-  if((slot_callbacks % sf_step) == 0) {
-    eb_tx_counter++;
-    if((eb_tx_counter % 5) == 0 || eb_tx_counter == 1) {
-      uint32_t tx_now = 0, coll_now = 0;
-      compute_adv_metrics(&tx_now, &coll_now);
-      LOG_INFO("CSV_ADV,id=%u,eb=%lu,tx=%lu,coll=%lu\n",
-               (unsigned)node_id, (unsigned long)eb_tx_counter,
-               (unsigned long)tx_now, (unsigned long)coll_now);
-    }
+  if((slot_callbacks % 10) == 0) {
+    energest_flush();
+    uint64_t cur_tx = energest_type_time(ENERGEST_TYPE_TRANSMIT);
+    uint64_t cur_rx = energest_type_time(ENERGEST_TYPE_LISTEN);
+    uint32_t slot0_tx_us = (uint32_t)(((cur_tx > join_tx_ticks ? (cur_tx - join_tx_ticks) : 0) * 1000000ULL) / ENERGEST_SECOND);
+    uint32_t slot0_rx_us = (uint32_t)(((cur_rx > join_rx_ticks ? (cur_rx - join_rx_ticks) : 0) * 1000000ULL) / ENERGEST_SECOND);
+    LOG_INFO("CSV_ENERGEST,id=%u,sf=%lu,eb=%lu,tx_us=%lu,rx_us=%lu,nbrs=%d,switches=%u,retries=%lu\n",
+             (unsigned)node_id, (unsigned long)sf_num, (unsigned long)eb_tx_counter,
+             (unsigned long)slot0_tx_us, (unsigned long)slot0_rx_us,
+             nbrs, (unsigned)parent_switches, (unsigned long)get_unicast_tx_retries());
   }
 }
 
@@ -291,7 +423,9 @@ PROCESS_THREAD(define_node_process, ev, data)
   static struct etimer check_timer;
   static struct etimer arrival_timer;
   PROCESS_BEGIN();
-  LOG_INFO("BOOT_CHECK: node_id=%u scheme=%d sf=%d\n", (unsigned)node_id, SYNC_SCHEME, SF_LENGTH);
+
+  energest_flush();
+  boot_rx_ticks = energest_type_time(ENERGEST_TYPE_LISTEN);
 
   if(node_id == 1) {
     NETSTACK_ROUTING.root_start();
@@ -300,11 +434,12 @@ PROCESS_THREAD(define_node_process, ev, data)
     boot_asn = 0;
     last_sync_asn = 0;
     phi_u = 0;
+    join_tx_ticks = energest_type_time(ENERGEST_TYPE_TRANSMIT);
+    join_rx_ticks = energest_type_time(ENERGEST_TYPE_LISTEN);
     apply_scheme_schedule();
     join_logged = 1;
   } else {
 #if POISSON_ARRIVAL
-    /* Staggered/Poisson arrival (\lambda = 5 nodes/s -> mean inter-arrival 0.2 s per node index) */
     clock_time_t arrival_delay = (clock_time_t)(((node_id - 1) * CLOCK_SECOND) / 5 + (random_rand() % (CLOCK_SECOND / 5)));
     etimer_set(&arrival_timer, arrival_delay);
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&arrival_timer));
@@ -312,6 +447,8 @@ PROCESS_THREAD(define_node_process, ev, data)
     (void)arrival_timer;
 #endif
     boot_asn = tsch_current_asn.ls4b;
+    energest_flush();
+    boot_rx_ticks = energest_type_time(ENERGEST_TYPE_LISTEN);
   }
 
   ctimer_set(&sf_timer, SF_LENGTH * (CLOCK_SECOND / 100), slotframe_callback, NULL);
@@ -320,27 +457,28 @@ PROCESS_THREAD(define_node_process, ev, data)
   while(!join_logged) {
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&check_timer));
 
-    if(tsch_is_associated) {
+    if(tsch_is_associated && NETSTACK_ROUTING.node_is_joined()) {
       join_asn = tsch_current_asn.ls4b;
       last_sync_asn = join_asn;
       uint8_t max_phi = (NUM_CHANNELS < 4) ? NUM_CHANNELS : 4;
       phi_u = (uint8_t)(((node_id ^ (join_asn / SF_LENGTH)) + (random_rand() & 0x03)) % max_phi);
       parent_switched_flag = 1;
-      apply_scheme_schedule();
-      energest_flush();
-      uint32_t tx_est = 0, coll_est = 0;
-      compute_adv_metrics(&tx_est, &coll_est);
-      uint32_t elapsed_join_slots = (join_asn > boot_asn) ? (join_asn - boot_asn) : join_asn;
-      uint32_t rx_est = elapsed_join_slots * 10;
 
-      LOG_INFO("CSV_JOIN,id=%u,asn=%lu,cpu=%lu,lpm=%lu,tx=%lu,rx=%lu,coll=%lu\n",
+      energest_flush();
+      join_tx_ticks = energest_type_time(ENERGEST_TYPE_TRANSMIT);
+      join_rx_ticks = energest_type_time(ENERGEST_TYPE_LISTEN);
+      uint32_t scan_rx_us = (uint32_t)(((join_rx_ticks > boot_rx_ticks ? (join_rx_ticks - boot_rx_ticks) : 0) * 1000000ULL) / ENERGEST_SECOND);
+      uint32_t elapsed_join_slots = (join_asn > boot_asn) ? (join_asn - boot_asn) : join_asn;
+
+      apply_scheme_schedule();
+
+      LOG_INFO("CSV_JOIN,id=%u,asn=%lu,scan_rx_us=%lu,parent=%u,tier=%u,nbrs=%d\n",
                (unsigned)node_id,
                (unsigned long)elapsed_join_slots,
-               (unsigned long)energest_type_time(ENERGEST_TYPE_CPU),
-               (unsigned long)energest_type_time(ENERGEST_TYPE_LPM),
-               (unsigned long)tx_est,
-               (unsigned long)rx_est,
-               (unsigned long)coll_est);
+               (unsigned long)scan_rx_us,
+               (unsigned)get_preferred_parent_id(),
+               (unsigned)cached_h_u,
+               uip_ds6_nbr_num());
       join_logged = 1;
     } else {
       etimer_reset(&check_timer);

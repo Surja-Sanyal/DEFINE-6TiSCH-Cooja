@@ -67,13 +67,32 @@ def save_standalone_legend():
         fig.savefig(p, dpi=300, bbox_inches="tight", pad_inches=0.04)
     fig.savefig(os.path.join(RESULTS_DIR, "legend_only.pdf"), format="pdf", bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
-    print("Saved standalone legend: Results/legend_only.pdf")
+
+
+def _solve_fixed_point_eb_prob(m_nbrs, p_tx_eb, p_tx_dio, P_L, C):
+    p_rx_eb = p_tx_eb * (1.0 - P_L) / float(C)
+    for _ in range(25):
+        total = 0.0
+        for k in range(1, m_nbrs + 1):
+            term = (
+                k * p_tx_eb
+                * ((1.0 - p_tx_eb) ** (k - 1))
+                * ((1.0 - p_tx_dio) ** (k - 1))
+                * ((1.0 - p_rx_eb) ** (m_nbrs - k))
+                * (1.0 - P_L)
+                * (1.0 / float(m_nbrs))
+            )
+            total += term / float(C)
+        p_rx_eb = max(1e-5, min(0.95, total))
+    return p_rx_eb
 
 
 def _run_markov_density_point(args):
     n_nodes, area, realdata, sims, S, C, p_tx_eb, p_tx_dio, P_L, TxFactor, RxFactor = args
     slot_dur_s = 0.01
     v_sup = 3.0
+    e_tx_slot_mJ = v_sup * TxFactor * slot_dur_s
+    e_rx_slot_mJ = v_sup * RxFactor * slot_dur_s
     comm_range = 50.0
     chs = [i + 1 for i in range(C)]
 
@@ -105,7 +124,7 @@ def _run_markov_density_point(args):
                     nbrs[v].append(u)
 
         children_bfs = [[] for _ in range(n_nodes + 1)]
-        parent_bfs = [-1] * (n_nodes + 1)
+        parent_bfs = [0] * (n_nodes + 1)
         visited = {0}
         q = [0]
         while q:
@@ -117,53 +136,64 @@ def _run_markov_density_point(args):
                     children_bfs[u].append(v)
                     q.append(v)
 
+        # 1. Exact Analytical Markov Chain Equations (Eqs. 2-9, zero empirical multipliers)
         p_rx_eb_arr = [0.0] * (n_nodes + 1)
         p_rx_jr_arr = [0.0] * (n_nodes + 1)
         p_rx_dio_arr = [0.0] * (n_nodes + 1)
-        t_j_slots = [0.0] * (n_nodes + 1)
+        t_u_slots = [0.0] * (n_nodes + 1)
 
         for u in range(1, n_nodes + 1):
             m = max(1, len(nbrs[u]))
-            k_max = max(1, min(m, int(round(math.sqrt(m) * 2.5))))
-            p_eb_val = 0.0
-            for k in range(1, k_max + 1):
-                term = k * p_tx_eb * ((1.0 - p_tx_eb) ** (k - 1)) * ((1.0 - p_tx_dio) ** (k - 1)) * (1.0 - P_L) / float(k_max)
-                p_eb_val += term / float(C)
-            p_eb_val = max(0.002, min(0.85, p_eb_val))
-            p_jr_val = max(0.01, min(0.90, k_max * p_eb_val * (1.0 - p_tx_dio) * (1.0 - P_L)))
-            p_dio_val = max(0.01, min(0.90, k_max * p_tx_dio * (1.0 - P_L)))
+            p_eb_val = _solve_fixed_point_eb_prob(m, p_tx_eb, p_tx_dio, P_L, C)
+            p_jr_val = sum(
+                k * p_eb_val * ((1.0 - p_eb_val) ** (m - k)) * ((1.0 - p_tx_dio) ** k) * ((1.0 - p_tx_eb) ** k) * (1.0 - P_L) / float(m)
+                for k in range(1, m + 1)
+            )
+            p_dio_val = sum(
+                k * p_tx_dio * ((1.0 - p_tx_dio) ** (k - 1)) * ((1.0 - p_eb_val) ** (m - k)) * ((1.0 - p_tx_eb) ** (k - 1)) * (1.0 - P_L) / float(m)
+                for k in range(1, m + 1)
+            )
+            p_jr_val = max(1e-4, min(0.95, p_jr_val))
+            p_dio_val = max(1e-4, min(0.95, p_dio_val))
 
             p_rx_eb_arr[u] = p_eb_val
             p_rx_jr_arr[u] = p_jr_val
             p_rx_dio_arr[u] = p_dio_val
-            t_j_slots[u] = 1.0 + S * ((1.0 / p_eb_val) + (1.0 / p_jr_val) + (1.0 / p_dio_val))
+            t_u_slots[u] = 1.0 + S * ((1.0 / p_eb_val) + (1.0 / p_jr_val) + (1.0 / p_dio_val))
 
-        memo_t = {}
-        def get_tree_t(u):
-            if u in memo_t:
-                return memo_t[u]
-            if not children_bfs[u]:
-                val = t_j_slots[u]
-            else:
-                val = t_j_slots[u] + max(get_tree_t(c) for c in children_bfs[u])
-            memo_t[u] = val
+        F_slots = [0.0] * (n_nodes + 1)
+        bfs_order = [0]
+        for u in bfs_order:
+            for c in children_bfs[u]:
+                F_slots[c] = F_slots[u] + t_u_slots[c]
+                bfs_order.append(c)
+
+        memo_sub = {}
+        def get_sub_t(u):
+            if u in memo_sub:
+                return memo_sub[u]
+            val = t_u_slots[u] + (max(get_sub_t(c) for c in children_bfs[u]) if children_bfs[u] else 0.0)
+            memo_sub[u] = val
             return val
 
-        pred_sync_s = (get_tree_t(0) * slot_dur_s) * 0.45
+        pred_sync_s = get_sub_t(0) * slot_dur_s
 
-        ep_pred_mJ = v_sup * float(np.mean([
-            RxFactor * slot_dur_s * (t_j_slots[max(0, parent_bfs[i])] + (S / p_rx_eb_arr[i])) * 0.45
-            + (TxFactor * slot_dur_s / p_rx_eb_arr[i]) + (RxFactor * slot_dur_s / p_rx_jr_arr[i])
+        # Eq. (8): Pledge radio energy E_P (in mJ)
+        ep_pred_mJ = float(np.mean([
+            e_rx_slot_mJ * (F_slots[parent_bfs[i]] + (S / p_rx_eb_arr[i]))
+            + (e_tx_slot_mJ / p_rx_eb_arr[i] + e_rx_slot_mJ / p_rx_jr_arr[i])
+            + (e_rx_slot_mJ / p_rx_dio_arr[i])
             for i in range(1, n_nodes + 1)
-        ])) * (1.0 + 0.0045 * n_nodes)
+        ]))
 
-        ej_pred_mJ = v_sup * float(np.mean([
-            (TxFactor * slot_dur_s * (p_tx_eb + p_rx_eb_arr[j] + p_tx_dio)
-             + RxFactor * slot_dur_s * max(1, len(children_bfs[j])) * p_rx_jr_arr[j])
-            * (get_tree_t(j) / float(S)) * 3.8
+        # Eq. (9): Joined node radio energy E_J (in mJ)
+        ej_pred_mJ = float(np.mean([
+            (e_tx_slot_mJ * (p_tx_eb + p_tx_dio)) * ((get_sub_t(j) - t_u_slots[j]) / float(S))
+            + (len(children_bfs[j]) * (e_tx_slot_mJ + e_rx_slot_mJ) / max(0.01, p_rx_jr_arr[j]))
             for j in range(1, n_nodes + 1)
-        ])) * (1.0 + 0.004 * n_nodes)
+        ]))
 
+        # 2. Unscaled Discrete-Event Slot-by-Slot 6TiSCH-MC Simulation
         joined = [False] * (n_nodes + 1)
         joined[0] = True
         joined_list = [0]
@@ -173,14 +203,14 @@ def _run_markov_density_point(args):
         rx_minimal_slots = [0] * (n_nodes + 1)
 
         asn = 0
-        target_join = int(round(n_nodes * 0.82))
+        target_join = int(round(n_nodes * 0.85))
         max_slots = 360000
         while len(joined_list) - 1 < target_join and asn < max_slots:
             c_slot = chs[asn % C]
             tx_nodes = []
             for j_id in joined_list:
                 rx_minimal_slots[j_id] += 1
-                if rng.random() <= p_tx_eb:
+                if rng.random() <= (p_tx_eb + p_tx_dio):
                     tx_nodes.append(j_id)
                     tx_events[j_id] += 1
 
@@ -203,15 +233,15 @@ def _run_markov_density_point(args):
             asn += S
 
         act_sync_s = asn * slot_dur_s
-        ep_act_mJ = v_sup * (sum(
-            RxFactor * slot_dur_s * (joined_asn[i] if joined[i] else asn)
+        ep_act_mJ = sum(
+            e_rx_slot_mJ * (joined_asn[i] if joined[i] else asn)
             for i in range(1, n_nodes + 1)
-        ) / float(n_nodes)) * (0.48 + 0.0038 * n_nodes)
+        ) / float(n_nodes)
 
-        ej_act_mJ = v_sup * (sum(
-            TxFactor * slot_dur_s * tx_events[j] * 14.0 + RxFactor * slot_dur_s * rx_minimal_slots[j] * 2.2
+        ej_act_mJ = sum(
+            e_tx_slot_mJ * tx_events[j] + e_rx_slot_mJ * rx_minimal_slots[j]
             for j in joined_list
-        ) / float(max(1, len(joined_list)))) * (0.28 + 0.0022 * n_nodes)
+        ) / float(max(1, len(joined_list)))
 
         pt = pred_sync_s / 100.0
         at = act_sync_s / 100.0
@@ -226,8 +256,8 @@ def _run_markov_density_point(args):
         act_ej_list.append(aej)
         pred_ep_list.append(pep)
         act_ep_list.append(aep)
-        pred_net_list.append(pep + 0.45 * pej)
-        act_net_list.append(aep + 0.45 * aej)
+        pred_net_list.append(pep + 0.1 * pej)
+        act_net_list.append(aep + 0.1 * aej)
 
     def mean_and_se(arr):
         m_val = float(np.mean(arr))
@@ -262,7 +292,6 @@ def generate_markov_figure6_from_simulation():
     S = 101
     C = 16
     i_eb = 4
-    eb_prob = 0.1
     P_L = 0.2
     P_T = 0.2
     R_T = 16
@@ -272,7 +301,7 @@ def generate_markov_figure6_from_simulation():
     nodes_list = list(range(25, 500 + 1, 25))
     sims = 5
 
-    p_tx_eb = eb_prob / float(i_eb)
+    p_tx_eb = 1.0 / float(i_eb)
     num_r = (2 ** R_T) * ((1.0 - P_T) ** R_T) * max(1.0, S / ((2 ** R_T) * I_dio))
     for r in range(R_T):
         num_r += P_T * (2 ** r) * ((1.0 - P_T) ** r) * max(1.0, S / ((2 ** r) * I_dio))
@@ -294,7 +323,6 @@ def generate_markov_figure6_from_simulation():
         max_y = 0.0
         for (y_mean, y_se), lbl, col, mk, ls in zip(y_pairs, legends, colors, markers, lstyles):
             max_y = max(max_y, float(np.max(y_mean + y_se)))
-            # ax.fill_between(sorted_densities, np.maximum(0.0, y_mean - y_se), y_mean + y_se, color=col, alpha=0.14)
             ax.errorbar(
                 sorted_densities, y_mean, yerr=y_se,
                 label=lbl, color=col, marker=mk, linestyle=ls,
@@ -313,7 +341,6 @@ def generate_markov_figure6_from_simulation():
         fig.tight_layout()
         fig.savefig(os.path.join(RESULTS_DIR, fname), format="pdf", bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved Markov graph with SE bands: Results/{fname}")
 
     plot_markov_panel(
         [(m_data[:, 2], m_data[:, 3]), (m_data[:, 4], m_data[:, 5])],
@@ -342,69 +369,48 @@ def generate_markov_figure6_from_simulation():
 
 
 def generate_wavefront_cdf_plot():
-    """
-    Plot the analytical two-regime piecewise-geometric join-time CDF (Eq. 17)
-    against the measured Cooja empirical join-time CDF at N = 100 and N = 500.
-    """
+    csv_100 = os.path.join(STAT_DIR, "join_times_N100_scheme1.csv")
+    csv_500 = os.path.join(STAT_DIR, "join_times_N500_scheme1.csv")
+    if not (os.path.exists(csv_100) and os.path.exists(csv_500)):
+        print("Skipping CDF plot until real join_times_N100_scheme1.csv and join_times_N500_scheme1.csv are generated by Cooja.")
+        return
+
+    emp_100 = np.sort(np.loadtxt(csv_100, delimiter=","))
+    emp_500 = np.sort(np.loadtxt(csv_500, delimiter=","))
+
     fig, ax = plt.subplots(figsize=(5.5, 3.85), dpi=300)
-    t_grid = np.linspace(0.0, 25.0, 250)
+    t_grid = np.linspace(0.0, max(25.0, float(np.percentile(emp_500, 99))), 250)
     sf_dur = 0.61
 
-    # 1) N = 100 analytical two-regime CDF (P_burst = 0.222/SF, P_tail = 0.162/SF, stage offset = 0.91 s)
     p1_100, p2_100, offset_100 = 0.222, 0.162, 0.91
-    cdf_pred_100 = []
-    for t in t_grid:
-        if t <= offset_100:
-            cdf_pred_100.append(0.0)
-        else:
-            m = (t - offset_100) / sf_dur
-            if m <= 6.0:
-                surv = (1.0 - p1_100) ** m
-            else:
-                surv = ((1.0 - p1_100) ** 6.0) * ((1.0 - p2_100) ** (m - 6.0))
-            cdf_pred_100.append(1.0 - surv)
-    cdf_pred_100 = np.array(cdf_pred_100)
+    cdf_pred_100 = np.array([
+        0.0 if t <= offset_100 else (
+            1.0 - ((1.0 - p1_100) ** ((t - offset_100) / sf_dur))
+            if (t - offset_100) / sf_dur <= 6.0
+            else 1.0 - (((1.0 - p1_100) ** 6.0) * ((1.0 - p2_100) ** (((t - offset_100) / sf_dur) - 6.0)))
+        )
+        for t in t_grid
+    ])
 
-    # 2) N = 500 analytical two-regime CDF (P_burst = 0.178/SF, P_tail = 0.135/SF, wave+stage offset = 4.37 s)
     p1_500, p2_500, offset_500 = 0.178, 0.135, 2.40
-    cdf_pred_500 = []
-    for t in t_grid:
-        if t <= offset_500:
-            cdf_pred_500.append(0.0)
-        else:
-            m = (t - offset_500) / (sf_dur * 1.46)
-            if m <= 6.0:
-                surv = (1.0 - p1_500) ** m
-            else:
-                surv = ((1.0 - p1_500) ** 6.0) * ((1.0 - p2_500) ** (m - 6.0))
-            cdf_pred_500.append(1.0 - surv)
-    cdf_pred_500 = np.array(cdf_pred_500)
+    cdf_pred_500 = np.array([
+        0.0 if t <= offset_500 else (
+            1.0 - ((1.0 - p1_500) ** ((t - offset_500) / (sf_dur * 1.46)))
+            if (t - offset_500) / (sf_dur * 1.46) <= 6.0
+            else 1.0 - (((1.0 - p1_500) ** 6.0) * ((1.0 - p2_500) ** (((t - offset_500) / (sf_dur * 1.46)) - 6.0)))
+        )
+        for t in t_grid
+    ])
 
-    rng = np.random.default_rng(42)
-    csv_100 = os.path.join(STAT_DIR, "join_times_N100_scheme1.csv")
-    if os.path.exists(csv_100):
-        emp_100 = np.sort(np.loadtxt(csv_100, delimiter=","))
-    else:
-        u = rng.uniform(0.0, 1.0, 3000)
-        emp_100 = np.sort(np.interp(u, cdf_pred_100, t_grid) + rng.normal(0.0, 0.18, 3000))
-        emp_100 = np.clip(emp_100, 0.61, 25.0)
-
-    csv_500 = os.path.join(STAT_DIR, "join_times_N500_scheme1.csv")
-    if os.path.exists(csv_500):
-        emp_500 = np.sort(np.loadtxt(csv_500, delimiter=","))
-    else:
-        u = rng.uniform(0.0, 1.0, 5000)
-        emp_500 = np.sort(np.interp(u, cdf_pred_500, t_grid) + rng.normal(0.0, 0.35, 5000))
-        emp_500 = np.clip(emp_500, 1.22, 25.0)
-
+    step_100 = max(1, len(emp_100) // 20)
+    step_500 = max(1, len(emp_500) // 20)
     ax.plot(t_grid, cdf_pred_100 * 100.0, color="#0044cc", linestyle="-", linewidth=2.2, label="Predicted CDF (DEFINE, $N=100$)")
-    ax.plot(emp_100[::150], np.linspace(0, 100, len(emp_100))[::150], color="#0044cc", linestyle="None", marker="o", markersize=6.0, markerfacecolor="white", markeredgewidth=1.6, label="Measured Cooja CDF ($N=100$)")
+    ax.plot(emp_100[::step_100], np.linspace(0, 100, len(emp_100))[::step_100], color="#0044cc", linestyle="None", marker="o", markersize=6.0, markerfacecolor="white", markeredgewidth=1.6, label="Measured Cooja CDF ($N=100$)")
     ax.plot(t_grid, cdf_pred_500 * 100.0, color="#d92121", linestyle="--", linewidth=2.2, label="Predicted CDF (DEFINE, $N=500$)")
-    ax.plot(emp_500[::250], np.linspace(0, 100, len(emp_500))[::250], color="#d92121", linestyle="None", marker="s", markersize=6.0, markerfacecolor="white", markeredgewidth=1.6, label="Measured Cooja CDF ($N=500$)")
+    ax.plot(emp_500[::step_500], np.linspace(0, 100, len(emp_500))[::step_500], color="#d92121", linestyle="None", marker="s", markersize=6.0, markerfacecolor="white", markeredgewidth=1.6, label="Measured Cooja CDF ($N=500$)")
 
     ax.set_xlabel("Joining time (s)", fontsize=12.0)
     ax.set_ylabel("Cumulative completion CDF (%)", fontsize=12.0)
-    ax.set_xlim(0.0, 24.0)
     ax.set_ylim(0.0, 102.0)
     ax.tick_params(labelsize=11)
     ax.grid(True, linestyle="--", alpha=0.45)
@@ -413,7 +419,6 @@ def generate_wavefront_cdf_plot():
     fig.savefig(os.path.join(PLOTS_DIR, "Fig_wavefront_cdf_comparison.png"), dpi=300, bbox_inches="tight")
     fig.savefig(os.path.join(RESULTS_DIR, "wavefront_cdf_comparison.pdf"), format="pdf", bbox_inches="tight")
     plt.close(fig)
-    print("Saved predicted vs. measured join-time CDF plot: Results/wavefront_cdf_comparison.pdf")
 
 
 def load_raw_data(prefix):
@@ -422,10 +427,17 @@ def load_raw_data(prefix):
         candidates = glob.glob(os.path.join(STAT_DIR, f"_{prefix}_stats_.txt"))
     if not candidates:
         return None
-    data = np.loadtxt(candidates[0], delimiter=",", usecols=range(12))
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    non_zero = data[data[:, 9] > 0]
+    rows = []
+    with open(candidates[0], "r") as f:
+        for line in f:
+            parts = [float(p.strip()) for p in line.strip().split(",") if p.strip()]
+            if len(parts) >= 12:
+                rows.append(parts[:19] if len(parts) >= 19 else parts[:12])
+    if not rows:
+        return None
+    min_cols = min(len(r) for r in rows)
+    data = np.array([r[:min_cols] for r in rows], dtype=float)
+    non_zero = data[data[:, 5] > 0]
     return non_zero if len(non_zero) > 0 else data
 
 
@@ -437,67 +449,43 @@ def get_series_with_se(prefix, x_col, fixed_filters, mode="default"):
     for col, val in fixed_filters.items():
         mask &= (data[:, col] == val)
 
-    has_both_geometries = (
-        mode in ("motewise", "densitywise")
-        and np.any(mask & (data[:, 1] == 100))
-        and np.any(mask & (data[:, 1] != 100))
-    )
-    if has_both_geometries:
-        if mode == "densitywise":
-            mask &= (data[:, 1] == 100)
-        elif mode == "motewise":
-            mask &= (data[:, 1] != 100)
+    if mode == "densitywise":
+        mask &= (data[:, 1] == 100)
+    elif mode == "motewise":
+        mask &= (data[:, 1] != 100)
 
     filtered = data[mask]
     if len(filtered) == 0:
-        filtered = data
+        return None, None
     by_x = {}
     for row in filtered:
         by_x.setdefault(float(row[x_col]), []).append(row)
     means, ses = [], []
     for k in sorted(by_x.keys()):
         arr = np.array(by_x[k], dtype=float)
-        m_row = np.mean(arr, axis=0).copy()
-        # When legacy stats files contain a single geometry per N, project constant-density
-        # (L(N) = 55*sqrt(N/50), density = 1.65e-2) vs fixed 100x100 m area (density = N/10000)
-        if not has_both_geometries and mode == "motewise":
-            n_val = max(50.0, float(m_row[0]))
-            # Relative density ratio (1.65e-2 / (N / 10000)) = 165.0 / N
-            dens_ratio = (165.0 / n_val) ** (0.08 if prefix == "p" else 0.22)
-            m_row[6] *= dens_ratio
-            m_row[7] *= dens_ratio
-            m_row[8] *= dens_ratio
-            m_row[9] *= dens_ratio
-            if prefix != "p":
-                base_comp = m_row[5] / max(1.0, n_val)
-                adj_comp = np.clip(base_comp + 0.09 * math.log(n_val / 165.0), 0.22, 0.99)
-                m_row[5] = round(adj_comp * n_val, 2)
-        means.append(m_row)
+        means.append(np.mean(arr, axis=0))
         if len(arr) > 1:
             ses.append(np.std(arr, axis=0, ddof=1) / math.sqrt(len(arr)))
         else:
-            cv = 0.032 if prefix == "p" else 0.058
-            ses.append(np.abs(m_row) * cv)
+            ses.append(np.zeros(arr.shape[1]))
     return np.array(means), np.array(ses)
 
 
 def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name=None, x_scale=1.0, y_scale=1.0, is_pct=False, is_total_energy=False, is_duty=False, is_tsync=False, mode="default"):
     fig, ax = plt.subplots(figsize=(5.5, 3.85), dpi=300)
+    plotted_any = False
     for key in ORDER:
         label, color, marker, ls, lw, mfc = MECHANISMS[key]
         mat, se_mat = get_series_with_se(key, x_col, fixed_filters, mode=mode)
         if mat is None or len(mat) == 0:
             continue
+        plotted_any = True
         x = mat[:, x_col] * x_scale
         if is_pct:
             y = np.minimum(100.0, (mat[:, 5] / np.maximum(1.0, mat[:, 0])) * 100.0)
             y_se = (se_mat[:, 5] / np.maximum(1.0, mat[:, 0])) * 100.0
         elif is_tsync:
-            # Regenerate \hat{T}_sync = 0.55 * t_50 + (1 - c) * T_pen(N, S, C) (median join time t_50, no I_eb in T_pen)
-            c_frac = np.clip(mat[:, 5] / np.maximum(1.0, mat[:, 0]), 0.0, 1.0)
-            t50_s = (mat[:, 8] / 100.0) * 0.82
-            t_pen = 320.0 * (0.65 + 0.35 * (mat[:, 0] / 200.0)) * (0.75 + 0.25 * (mat[:, 3] / 61.0)) * (0.80 + 0.20 * (mat[:, 2] / 16.0))
-            y = (0.55 * t50_s + (1.0 - c_frac) * t_pen) * y_scale
+            y = mat[:, 6] * y_scale
             y_se = se_mat[:, 6] * y_scale
         elif is_total_energy:
             e_tx_j = mat[:, 10] * (3.0 * 0.0174 / 32768.0)
@@ -505,18 +493,15 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
             y = (e_tx_j + e_rx_j) * y_scale
             y_se = (se_mat[:, 10] * (3.0 * 0.0174 / 32768.0) + se_mat[:, 11] * (3.0 * 0.0188 / 32768.0) * 0.05) * y_scale
         elif is_duty:
-            y = np.minimum(100.0, ((mat[:, 10] * 0.2 + mat[:, 11] * 0.05) / (mat[:, 0] * 360000.0)) * 100.0)
-            y_se = ((se_mat[:, 10] * 0.2 + se_mat[:, 11] * 0.05) / (mat[:, 0] * 360000.0)) * 100.0
+            y = np.minimum(100.0, ((mat[:, 10] + mat[:, 11] * 0.05) / (mat[:, 0] * 3600.0 * 32768.0)) * 100.0)
+            y_se = ((se_mat[:, 10] + se_mat[:, 11] * 0.05) / (mat[:, 0] * 3600.0 * 32768.0)) * 100.0
         else:
             y = mat[:, col_idx] * y_scale
             y_se = se_mat[:, col_idx] * y_scale
-            if x_col == 4 and key == "p" and col_idx in (6, 7, 8):
-                y = (y / np.maximum(1.0, mat[:, 4])) * (1.0 + 0.14 * (mat[:, 4] - 1.0))
 
         ms = 8.5 if marker == "*" else 6.4
         z = 10 if key == "p" else 4
         if np.any(y_se > 0):
-            # ax.fill_between(x, np.maximum(0.0, y - y_se), y + y_se, color=color, alpha=0.14, zorder=z - 1)
             ax.errorbar(
                 x, y, yerr=y_se,
                 label=label, color=color, marker=marker, linestyle=ls,
@@ -533,6 +518,10 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
                 alpha=1.0, zorder=z,
             )
 
+    if not plotted_any:
+        plt.close(fig)
+        return
+
     ax.set_xlabel(xlabel, fontsize=12.0)
     ax.set_ylabel(ylabel, fontsize=12.0)
     ax.tick_params(labelsize=11)
@@ -544,22 +533,107 @@ def plot_sweep(x_col, fixed_filters, col_idx, xlabel, ylabel, png_name, pdf_name
     if pdf_name:
         fig.savefig(os.path.join(RESULTS_DIR, pdf_name), format="pdf", bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved plot with SE bands: {png_name} -> Results/{pdf_name}")
+
+
+def generate_latex_table_iv():
+    """
+    Build Results/table_iv_real.tex strictly from the multi-seed Cooja statistics in Statistics/.
+    """
+    table_rows_spec = [
+        ("e",                  "6TiSCH-MC ($I_{eb}=1S$) \\cite{vilajosana2017minimal}"),
+        ("mc_4s",              "6TiSCH-MC (Tuned $I_{eb}=4S$)"),
+        ("mc_26s",             "6TiSCH-MC (Default $I_{eb}=26S$)"),
+        ("c",                  "CSMJ \\cite{chang2024csmj}"),
+        ("a_2",                "ATP: 2 \\cite{karalis2018atp}"),
+        ("r",                  "EDBA-SA \\cite{khoufi2018enhanced}"),
+        ("d",                  "ECV-SA \\cite{vogli2018fast}"),
+        ("pair",               "Pairing \\cite{pairing2024icufn}"),
+        ("t",                  "TRGB \\cite{kalita2023trgb}"),
+        ("ebmc",               "EBMC ($I_{eb}=1S$) \\cite{park2025ebmc}"),
+        ("ebmc_2s",            "EBMC (Tuned $I_{eb}=2S$)"),
+        ("s",                  "EASE \\cite{kalita2025ease}"),
+        ("ease_adapt",         "EASE + \\texttt{ADAPT} (Grafted, Alg.\\ 1+KA)"),
+        ("ebmc_adapt",         "EBMC + \\texttt{ADAPT} (Grafted, Alg.\\ 1+KA)"),
+        ("idhash_guard_adapt", "ID-Hash + Guard + \\texttt{ADAPT} (Control)"),
+        ("assign_hyst",        "\\texttt{ASSIGN} (Hysteresis Only, No Refresh/Guard)"),
+        ("assign_ref",         "\\texttt{ASSIGN} (Refresh Only, No Guard, $1S$)"),
+        ("assign_guard",       "\\texttt{ASSIGN} (Guard Only, Hysteresis, $1S$)"),
+        ("assign_both",        "\\texttt{ASSIGN}-Only (Refresh + Guard, $1S$)"),
+        ("adapt_age",          "\\texttt{ADAPT} (Age Only, Cell 0)"),
+        ("adapt_dens",         "\\texttt{ADAPT} (Density Only, Cell 0)"),
+        ("adapt_nophase",      "\\texttt{ADAPT} (No Phase $\\phi_u=0$, Cell 0)"),
+        ("adapt_full",         "\\texttt{ADAPT}-Only (Full, Cell 0)"),
+        ("define_noka",        "\\texttt{DEFINE} (No Keepalive)"),
+        ("define_mrm",         "\\texttt{DEFINE} (Lossy MRM 85\\% PRR)"),
+        ("define_rev",         "\\texttt{DEFINE} (Reversed Sweep Order)"),
+        ("define_poisson",     "\\texttt{DEFINE} (Poisson Arrivals, $\\lambda=5\\text{ /s}$)"),
+        ("p",                  "\\textbf{\\texttt{DEFINE} (Full, 32-Entry Table)}"),
+    ]
+
+    def format_row(prefix, label, n_target):
+        d32 = load_raw_data(prefix)
+        if d32 is None:
+            return None
+        m32 = d32[(d32[:, 0] == n_target) & (d32[:, 1] == 100) & (d32[:, 2] == 16) & (d32[:, 3] == 61) & (d32[:, 4] == 1)]
+        if len(m32) == 0:
+            return None
+
+        d64 = load_raw_data(f"{prefix}_64nbr")
+        m64 = d64[(d64[:, 0] == n_target) & (d64[:, 1] == 100)] if d64 is not None else np.empty((0, 12))
+
+        n_seeds = len(m32)
+        comp32 = (m32[:, 5] / float(n_target)) * 100.0
+        m_join_100s = m32[:, 8] * 1e-4
+        p95_100s = m32[:, 7] * 1e-4
+        coll_10k = m32[:, 9] * 1e-4
+        eslot0 = m32[:, 10] * (3.0 * 0.0174 / 32768.0)
+        rmst_ks = ((comp32 / 100.0) * (m_join_100s * 100.0) + (1.0 - comp32 / 100.0) * 3600.0) / 1000.0
+        e3600 = (comp32 / 100.0) * (0.0564 * (m_join_100s * 100.0) + eslot0 / float(n_target)) + (1.0 - comp32 / 100.0) * 203.04
+        eb_rate = float(np.mean(m32[:, 13])) if m32.shape[1] > 13 else 1.0
+
+        def ms_str(arr, fmt="%.2f"):
+            m = float(np.mean(arr))
+            se = float(np.std(arr, ddof=1) / math.sqrt(len(arr))) if len(arr) > 1 else 0.0
+            return f"${fmt % m} \\pm {fmt % se}$"
+
+        if len(m64) > 0:
+            comp64 = (m64[:, 5] / float(n_target)) * 100.0
+            c64_str = ms_str(comp64, "%.1f")
+        else:
+            c64_str = "---"
+
+        return (
+            f"{label} & ${eb_rate:.2f}$ & {ms_str(rmst_ks)} & {ms_str(m_join_100s)} & "
+            f"{ms_str(p95_100s)} & {ms_str(coll_10k)} & {ms_str(comp32, '%.1f')} & "
+            f"{c64_str} & {ms_str(eslot0)} & {ms_str(e3600, '%.1f')} \\\\"
+        )
+
+    out_lines = ["% Auto-generated from real multi-seed Cooja logs in Statistics/"]
+    for n_val in (100, 500):
+        out_lines.append(f"% --- N = {n_val} ---")
+        for prefix, lbl in table_rows_spec:
+            line = format_row(prefix, lbl, n_val)
+            if line:
+                out_lines.append(line)
+
+    out_file = os.path.join(RESULTS_DIR, "table_iv_real.tex")
+    with open(out_file, "w") as f:
+        f.write("\n".join(out_lines) + "\n")
+    print(f"Wrote real Cooja Table IV rows to {out_file}")
 
 
 if __name__ == "__main__":
     save_standalone_legend()
     generate_markov_figure6_from_simulation()
     generate_wavefront_cdf_plot()
+    generate_latex_table_iv()
 
     f_nodes = {2: 16, 3: 61, 4: 1}
-    # Fig. 7: Constant-density node sweep (mode="motewise")
     plot_sweep(0, f_nodes, 6,  "Total pledges", r"Total sync time ($\times 10^3$ s)", "Fig9a_total_sync_time.png", "motewise_total_time.pdf", y_scale=1e-3, is_tsync=True, mode="motewise")
     plot_sweep(0, f_nodes, 8,  "Total pledges", r"Average sync time ($\times 10^4$ slots)", "Fig9b_avg_sync_time.png", "motewise_average_neighbour_time.pdf", y_scale=1e-4, mode="motewise")
     plot_sweep(0, f_nodes, 9,  "Total pledges", r"Collisions ($\times 10^4$)", "Fig9c_collisions.png", "motewise_average_collisions.pdf", y_scale=1e-4, mode="motewise")
     plot_sweep(0, f_nodes, 5,  "Total pledges", r"DODAG completion ($\%$)", "Fig9d_dodag_completion.png", "motewise_dodag_completion.pdf", is_pct=True, mode="motewise")
 
-    # Figs. 8 & 9: Fixed-area (100 m x 100 m) spatial-density sweep (mode="densitywise")
     dens_lbl = r"Spatial density ($\times 10^{-2}$ motes/m$^2$)"
     plot_sweep(0, f_nodes, 6,  dens_lbl, r"Total sync time ($\times 10^3$ s)", "Fig10a_density_total_time.png", "densitywise_total_time.pdf", x_scale=0.01, y_scale=1e-3, is_tsync=True, mode="densitywise")
     plot_sweep(0, f_nodes, 8,  dens_lbl, r"Average sync time ($\times 10^4$ slots)", "Fig10b_density_avg_time.png", "densitywise_average_neighbour_time.pdf", x_scale=0.01, y_scale=1e-4, mode="densitywise")
@@ -589,4 +663,5 @@ if __name__ == "__main__":
     plot_sweep(4, f_eb, 6, "EB interval multiplier", r"Total sync time ($\times 10^3$ s)", "Fig14a_eb_total_sync_time.png", "eb_intervalwise_total_time.pdf", y_scale=1e-3, is_tsync=True)
     plot_sweep(4, f_eb, 8, "EB interval multiplier", r"Average sync time ($\times 10^4$ slots)", "Fig14b_eb_avg_sync_time.png", "eb_intervalwise_average_neighbour_time.pdf", y_scale=1e-4)
     plot_sweep(4, f_eb, 9, "EB interval multiplier", r"Collisions ($\times 10^4$)", "Fig14c_eb_collisions.png", "eb_intervalwise_average_collisions.pdf", y_scale=1e-4)
-    plot_sweep(4, f_eb, 5, "EB interval multiplier", r"DODAG completion ($\%$)", "Fig14d_eb_dodag_completion.png", "eb_intervalwise_dodag_completion.pdf", is_pct=True)
+    plot_sweep(4, f_eb, 5, "EB interval multiplier", r"DODAG completion ($\%$)", "Fig14d_eb_dodag_completion.pdf", "eb_intervalwise_dodag_completion.pdf", is_pct=True)
+    

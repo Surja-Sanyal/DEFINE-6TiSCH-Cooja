@@ -2,6 +2,11 @@ name: Cooja 6TiSCH Full Campaign Sweep
 
 on:
   workflow_dispatch:
+    inputs:
+      num_seeds:
+        description: 'Number of paired random seeds per point (e.g. 5 or 30)'
+        required: false
+        default: '30'
 
 permissions:
   contents: write
@@ -10,14 +15,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  simulate:
+  simulate-sweeps:
     runs-on: ubuntu-latest
     container: contiker/contiki-ng:latest
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        scheme: [5, 6, 7, 8, 4, 3, 2, 1]
+        scheme: [1, 2, 3, 4, 5, 6, 7, 8]
         group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
     steps:
@@ -48,22 +53,11 @@ jobs:
             rm -rf "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
             cp -a /home/user/contiki-ng/tools/cooja "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
           fi
-
-          if [ -d "/home/user/.gradle/caches" ] && [ ! -d "$HOME/.gradle/caches" ]; then
-            mkdir -p "$HOME/.gradle"
-            cp -rn /home/user/.gradle/* "$HOME/.gradle/" 2>/dev/null || true
-          fi
-
           mkdir -p /home/user
           rm -rf /home/user/contiki-ng
           ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
 
-          if ! grep -q "maven-central.storage-download.googleapis.com" /home/user/contiki-ng/tools/cooja/build.gradle; then
-            sed -i 's/mavenCentral()/maven { url "https:\/\/maven-central.storage-download.googleapis.com\/maven2\/" }\n    mavenCentral()/g' \
-              /home/user/contiki-ng/tools/cooja/build.gradle || true
-          fi
-
-          python3 -c "import scripts.run_cooja_headless as r; r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }})"
+          python3 -c "import scripts.run_cooja_headless as r; s=list(range(1, int('${{ inputs.num_seeds }}' or '30') + 1)); r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }}, seeds=s)"
 
       - name: Upload Statistics Artifact
         uses: actions/upload-artifact@v4
@@ -72,8 +66,59 @@ jobs:
           path: Statistics/
           retention-days: 1
 
+  simulate-ablations:
+    runs-on: ubuntu-latest
+    container: contiker/contiki-ng:latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+        group: [2, 10] # group 2 -> N=100, group 10 -> N=500
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache Gradle Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            /home/user/.gradle/caches
+          key: cooja-gradle-${{ hashFiles('contiki-ng-define/tools/cooja/build.gradle') }}
+          restore-keys: |
+            cooja-gradle-
+
+      - name: Run Cooja Ablation & Control Batch
+        run: |
+          rm -rf Statistics/*_cooja_stats_.txt
+          if [ ! -f "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja/build.gradle" ] && [ -f "/home/user/contiki-ng/tools/cooja/build.gradle" ]; then
+            rm -rf "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
+            cp -a /home/user/contiki-ng/tools/cooja "$GITHUB_WORKSPACE/contiki-ng-define/tools/cooja"
+          fi
+          mkdir -p /home/user
+          rm -rf /home/user/contiki-ng
+          ln -sfn "$GITHUB_WORKSPACE/contiki-ng-define" /home/user/contiki-ng
+
+          python3 -c "import scripts.run_cooja_headless as r; s=list(range(1, int('${{ inputs.num_seeds }}' or '30') + 1)); r.run_sweep_group(scheme_id=${{ matrix.scheme }}, group_id=${{ matrix.group }}, seeds=s)"
+
+      - name: Upload Ablation Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stats-ablation-s${{ matrix.scheme }}-g${{ matrix.group }}
+          path: Statistics/
+          retention-days: 1
+
   merge-and-plot:
-    needs: simulate
+    needs: [simulate-sweeps, simulate-ablations]
     if: always()
     runs-on: ubuntu-latest
     container: contiker/contiki-ng:latest
@@ -86,26 +131,27 @@ jobs:
       - name: Download All Partial Artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: stats-s*
+          pattern: stats-*
           path: tmp_artifacts
 
-      - name: Merge All Partial Statistics and Plot
+      - name: Merge All Multi-Seed Statistics and Plot
         run: |
           python3 -c '
-          import os, glob
+          import os, glob, shutil
 
           os.makedirs("Statistics", exist_ok=True)
           merged = {}
 
-          for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_*.txt", recursive=True)):
+          for filepath in sorted(glob.glob("tmp_artifacts/**/*_stats_.txt", recursive=True)):
               fname = os.path.basename(filepath)
               with open(filepath, "r") as f:
                   for idx, line in enumerate(f):
                       line = line.strip()
                       if line:
                           parts = [p.strip() for p in line.split(",") if p.strip()]
-                          if len(parts) >= 10 and float(parts[9]) > 0:
-                              key = (int(float(parts[0])), int(float(parts[1])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])), idx)
+                          if len(parts) >= 12 and float(parts[5]) > 0:
+                              seed_id = int(float(parts[12])) if len(parts) > 12 else idx
+                              key = (int(float(parts[0])), int(float(parts[1])), int(float(parts[2])), int(float(parts[3])), int(float(parts[4])), seed_id)
                               merged.setdefault(fname, {})[key] = line
 
           for fname, row_dict in merged.items():
@@ -113,12 +159,13 @@ jobs:
               out_path = os.path.join("Statistics", fname)
               with open(out_path, "w") as f:
                   f.write("\n".join(sorted_lines) + "\n")
-              print(f"Merged {len(sorted_lines)} valid non-zero seed rows into {out_path}")
+              print(f"Merged {len(sorted_lines)} real Cooja seed rows into {out_path}")
+
+          for csv_file in glob.glob("tmp_artifacts/**/join_times_*.csv", recursive=True):
+              shutil.copy(csv_file, os.path.join("Statistics", os.path.basename(csv_file)))
           '
 
-          if [ -f "scripts/plot_results.py" ]; then
-            python3 scripts/plot_results.py
-          fi
+          python3 scripts/plot_results.py
 
       - name: Upload Unified Final Results & Plots
         uses: actions/upload-artifact@v4
@@ -149,4 +196,4 @@ jobs:
 
           git add -A Statistics/ Plots/ Results/
           find . -maxdepth 2 -name "*.png" -exec git add {} + 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "Auto-update merged multi-seed Cooja statistics, CDF plot, and Figs 7-12 PDFs" && git push origin main)
+          git diff --staged --quiet || (git commit -m "Commit 100% real multi-seed Cooja statistics, plots, and Table IV rows" && git push origin main)

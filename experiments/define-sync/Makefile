@@ -29,6 +29,14 @@ else
 CFLAGS += -DATP_SUBSLOTS=2
 endif
 
+ifdef NBR_CAP
+CFLAGS += -DNBR_CAP=$(NBR_CAP)
+endif
+
+ifdef POISSON_ARRIVAL
+CFLAGS += -DPOISSON_ARRIVAL=$(POISSON_ARRIVAL)
+endif
+
 CFLAGS += -fno-stack-protector
 
 include $(CONTIKI)/Makefile.include

@@ -1,14 +1,11 @@
 import os
 import re
 import math
-import glob
 import time
 import shutil
 import random
 import subprocess
 import numpy as np
-
-USE_Z1 = False
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXP_DIR = os.path.join(ROOT_DIR, "experiments", "define-sync")
@@ -20,23 +17,38 @@ if not os.path.exists(COOJA_DIR):
     COOJA_DIR = "/home/user/contiki-ng/tools/cooja"
 
 SCHEME_MAP = {
-    1: "p",    # DEFINE (Proposed)
-    2: "e",    # 6TiSCH-MC
-    3: "r",    # EDBA-SA
-    4: "d",    # ECV-SA
-    5: "a_2",  # ATP: 2
-    6: "t",    # TRGB (Kalita & Khatua)
-    7: "c",    # CSMJ (Chang, Watteyne, & Vilajosana)
-    8: "s"     # EASE (A. Kalita)
+    1:  "p",                  # DEFINE (Full)
+    2:  "e",                  # 6TiSCH-MC (1S)
+    3:  "r",                  # EDBA-SA
+    4:  "d",                  # ECV-SA
+    5:  "a_2",                # ATP: 2
+    6:  "t",                  # TRGB
+    7:  "c",                  # CSMJ
+    8:  "s",                  # EASE
+    9:  "pair",               # Pairing [19]
+    10: "ebmc",               # EBMC (1S) [20]
+    11: "mc_4s",              # 6TiSCH-MC (Tuned 4S)
+    12: "mc_26s",             # 6TiSCH-MC (Default 26S)
+    13: "ebmc_2s",            # EBMC (Tuned 2S)
+    14: "ease_adapt",         # EASE + ADAPT (Grafted)
+    15: "ebmc_adapt",         # EBMC + ADAPT (Grafted)
+    16: "idhash_guard_adapt", # ID-Hash + Guard + ADAPT (Control)
+    17: "assign_hyst",        # ASSIGN (Hysteresis Only)
+    18: "assign_ref",         # ASSIGN (Refresh Only)
+    19: "assign_guard",       # ASSIGN (Guard Only)
+    20: "assign_both",        # ASSIGN-Only (Refresh + Guard)
+    21: "adapt_age",          # ADAPT (Age Only)
+    22: "adapt_dens",         # ADAPT (Density Only)
+    23: "adapt_nophase",      # ADAPT (No Phase)
+    24: "adapt_full",         # ADAPT-Only (Full)
+    25: "define_noka",        # DEFINE (No Keepalive)
+    26: "define_mrm",         # DEFINE (Lossy MRM 85% PRR)
+    27: "define_rev",         # DEFINE (Reversed Sweep Order)
+    28: "define_poisson",     # DEFINE (Poisson Arrivals)
 }
 
 
 def compute_constant_density_area(n_nodes, base_nodes=50, base_area=55):
-    """
-    Side length L(N) = L_0 * sqrt(N / 50) for the constant-density sweep (Fig. 7).
-    Note: for N = 150, L(150) = 95 m so constant-density rows never collide with
-    fixed-area 100 m x 100 m spatial-density rows (area == 100 in Figs. 8 & 9).
-    """
     side = int(round(base_area * math.sqrt(float(n_nodes) / float(base_nodes))))
     if side == 100:
         side = 99
@@ -44,10 +56,6 @@ def compute_constant_density_area(n_nodes, base_nodes=50, base_area=55):
 
 
 def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
-    """
-    Generate progressive, nested coordinates from RT-IoT2022 (_realdata_.txt) so that
-    increasing N (e.g. 50 -> 100 -> 150) preserves existing relative node positions.
-    """
     rng = random.Random(seed)
     if os.path.exists(REALDATA_PATH):
         raw = np.loadtxt(REALDATA_PATH, dtype="object", delimiter=",")
@@ -87,10 +95,23 @@ def load_realdata_coords(n_nodes, area=100, seed=2, tx_range=50.0):
     return coords
 
 
-def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2, timeout_ms=600000, nbr_cap=32, poisson_arrival=0):
+def build_interference_adj(coords, tx_range=50.0):
+    n_total = len(coords)
+    adj = {i + 1: set() for i in range(n_total)}
+    for i in range(n_total):
+        for j in range(i + 1, n_total):
+            if math.hypot(coords[i][0] - coords[j][0], coords[i][1] - coords[j][1]) <= tx_range:
+                adj[i + 1].add(j + 1)
+                adj[j + 1].add(i + 1)
+    return adj
+
+
+def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2, timeout_ms=600000, nbr_cap=32):
+    poisson_flag = 1 if scheme_id == 28 else 0
+    rx_success = 0.85 if scheme_id == 26 else 1.0
     make_vars = (
         f"SYNC_SCHEME={scheme_id} SF_LENGTH={sf_len} NUM_CHANNELS={n_ch} "
-        f"EB_MULT={eb_mult} NBR_CAP={nbr_cap} POISSON_ARRIVAL={poisson_arrival}"
+        f"EB_MULT={eb_mult} NBR_CAP={nbr_cap} POISSON_ARRIVAL={poisson_flag}"
     )
     mote_id_iface = "org.contikios.cooja.contikimote.interfaces.ContikiMoteID"
     motetype_id = "cooja_define"
@@ -137,9 +158,6 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2
     </mote>""")
 
     target_motes = len(coords) - 1
-    near_full = int(target_motes * (0.96 if scheme_id == 1 else 0.90))
-    min_wait_us = 95000000 if scheme_id == 1 else 60000000
-    gap_wait_us = 35000000 if scheme_id == 1 else 25000000
 
     csc_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <simconf>
@@ -152,7 +170,7 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2
       <transmitting_range>50.0</transmitting_range>
       <interference_range>50.0</interference_range>
       <success_ratio_tx>1.0</success_ratio_tx>
-      <success_ratio_rx>1.0</success_ratio_rx>
+      <success_ratio_rx>{rx_success}</success_ratio_rx>
     </radiomedium>
     <events>
       <logoutput>40000</logoutput>
@@ -167,17 +185,12 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2
         TIMEOUT({timeout_ms}, log.testOK());
         var joined = 0;
         var target = {target_motes};
-        var near_full = {near_full};
         var last_join_time = 0;
         GENERATE_MSG(10000, "CHECK_STAGNATION");
         while (joined &lt; target) {{
           YIELD();
           if (msg.equals("CHECK_STAGNATION")) {{
-            if (joined &gt;= near_full &amp;&amp; (time - last_join_time) &gt; 20000000) {{
-              log.log("STAGNATION_STOP at time=" + time + " joined=" + joined + "\\n");
-              log.testOK();
-            }}
-            if (joined &gt; 0 &amp;&amp; (time - last_join_time) &gt; {gap_wait_us} &amp;&amp; time &gt; {min_wait_us}) {{
+            if (joined &gt; 0 &amp;&amp; (time - last_join_time) &gt; 60000000 &amp;&amp; time &gt; 120000000) {{
               log.log("STAGNATION_STOP at time=" + time + " joined=" + joined + "\\n");
               log.testOK();
             }}
@@ -187,7 +200,7 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2
             log.log(msg + "\\n");
             joined++;
             last_join_time = time;
-          }} else if (msg.contains("CSV_ADV")) {{
+          }} else if (msg.contains("CSV_SLOT0_TX") || msg.contains("CSV_ENERGEST") || msg.contains("CSV_PARENT_SWITCH")) {{
             log.log(msg + "\\n");
           }}
         }}
@@ -202,16 +215,17 @@ def generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=2
         f.write(csc_content)
 
 
-def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb_mult=1, seeds=None, nbr_cap=32, poisson_arrival=0):
+def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb_mult=1, seeds=None, nbr_cap=32):
     os.makedirs(STAT_DIR, exist_ok=True)
     if area is None:
         area = compute_constant_density_area(n_nodes)
 
     stat_key = SCHEME_MAP[scheme_id]
-    stat_file = os.path.join(STAT_DIR, f"_{stat_key}_cooja_stats_.txt")
+    suffix = "_64nbr" if nbr_cap == 64 else ""
+    stat_file = os.path.join(STAT_DIR, f"_{stat_key}{suffix}_cooja_stats_.txt")
 
     if seeds is None:
-        seeds = [2, 17, 31]
+        seeds = list(range(1, 31))
 
     shutil.rmtree(os.path.join(EXP_DIR, "build"), ignore_errors=True)
 
@@ -224,117 +238,171 @@ def run_cooja_and_parse(scheme_id, n_nodes=50, area=None, n_ch=16, sf_len=61, eb
 
     all_join_seconds = []
 
+    join_re = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),scan_rx_us=(\d+),parent=(\d+),tier=(\d+),nbrs=(\d+)")
+    tx_re = re.compile(r"CSV_SLOT0_TX,id=(\d+),sf=(\d+),ch=(\d+),tier=(\d+),parent=(\d+),sub=(\d+)")
+    en_re = re.compile(r"CSV_ENERGEST,id=(\d+),sf=(\d+),eb=(\d+),tx_us=(\d+),rx_us=(\d+),nbrs=(\d+),switches=(\d+),retries=(\d+)")
+
     for seed in seeds:
         coords = load_realdata_coords(n_nodes, area, seed=seed)
-        csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}.csc")
-        generate_csc_file(
-            csc_path, coords, scheme_id, sf_len, n_ch, eb_mult,
-            seed=seed, nbr_cap=nbr_cap, poisson_arrival=poisson_arrival
-        )
+        adj = build_interference_adj(coords, tx_range=50.0)
+        csc_path = os.path.join(EXP_DIR, f"sim_scheme_{scheme_id}_cap{nbr_cap}.csc")
+        generate_csc_file(csc_path, coords, scheme_id, sf_len, n_ch, eb_mult, seed=seed, nbr_cap=nbr_cap)
 
         testlog_path = os.path.join(COOJA_DIR, "COOJA.testlog")
         if os.path.exists(testlog_path):
             os.remove(testlog_path)
 
         cmd = ["./gradlew", "run", f"--args=--no-gui {csc_path}"]
-        print(f"Executing Seed {seed}: Scheme {scheme_id} (Nodes: {n_nodes}, Area: {area}, C: {n_ch}, SF: {sf_len}, EB: {eb_mult})")
+        print(f"Executing Seed {seed}: Scheme {scheme_id} ({stat_key}), N={n_nodes}, Area={area}, C={n_ch}, SF={sf_len}, EB={eb_mult}, Cap={nbr_cap}")
         proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
 
         if proc.returncode != 0 and not (os.path.exists(testlog_path) and "CSV_JOIN" in open(testlog_path, errors="ignore").read()):
             time.sleep(2)
-            proc = subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
+            subprocess.run(cmd, cwd=COOJA_DIR, capture_output=True, text=True, env=env)
 
-        log_lines = []
-        if os.path.exists(testlog_path):
-            with open(testlog_path, "r") as f:
-                log_lines = f.readlines()
+        if not os.path.exists(testlog_path):
+            continue
 
-        pattern = re.compile(r"CSV_JOIN,id=(\d+),asn=(\d+),cpu=(\d+),lpm=(\d+),tx=(\d+),rx=(\d+)(?:,coll=(\d+))?")
-        adv_pattern = re.compile(r"CSV_ADV,id=(\d+),eb=(\d+),tx=(\d+),coll=(\d+)")
-        asns, rx_ticks = [], []
-        node_tx, node_coll = {}, {}
+        with open(testlog_path, "r", errors="ignore") as f:
+            log_lines = f.readlines()
+
+        joined_asns = {}
+        scan_rx_us_map = {}
+        node_parent = {1: 0}
+        node_tier = {1: 0}
+        node_nbrs = {}
+        node_tx_us = {}
+        node_rx_us = {}
+        node_eb_cnt = {}
+        node_switches = {}
+        node_retries = {}
+        sf_ch_senders = {}
 
         for line in log_lines:
-            m = pattern.search(line)
-            if m:
-                nid = int(m.group(1))
-                asns.append(int(m.group(2)))
-                node_tx[nid] = int(m.group(5))
-                rx_ticks.append(int(m.group(6)))
-                node_coll[nid] = int(m.group(7)) if m.group(7) else 0
+            mj = join_re.search(line)
+            if mj:
+                nid = int(mj.group(1))
+                joined_asns[nid] = int(mj.group(2))
+                scan_rx_us_map[nid] = int(mj.group(3))
+                node_parent[nid] = int(mj.group(4))
+                node_tier[nid] = int(mj.group(5))
+                node_nbrs[nid] = int(mj.group(6))
                 continue
-            m_adv = adv_pattern.search(line)
-            if m_adv:
-                nid = int(m_adv.group(1))
-                node_tx[nid] = max(node_tx.get(nid, 0), int(m_adv.group(3)))
-                node_coll[nid] = max(node_coll.get(nid, 0), int(m_adv.group(4)))
 
-        tx_ticks = list(node_tx.values())
-        colls = list(node_coll.values())
+            mt = tx_re.search(line)
+            if mt:
+                nid = int(mt.group(1))
+                sf_idx = int(mt.group(2))
+                ch_off = int(mt.group(3))
+                node_tier[nid] = int(mt.group(4))
+                node_parent[nid] = int(mt.group(5))
+                sub_cnt = int(mt.group(6))
+                sf_ch_senders.setdefault((sf_idx, ch_off), []).append((nid, sub_cnt))
+                continue
 
-        raw_joined = len(asns)
-        if raw_joined > 0:
-            if scheme_id == 1:
-                in_flight = int(round((n_nodes - raw_joined) * 0.88))
-                num_joined = min(n_nodes, raw_joined + in_flight)
-            else:
-                num_joined = raw_joined
+            me = en_re.search(line)
+            if me:
+                nid = int(me.group(1))
+                node_eb_cnt[nid] = max(node_eb_cnt.get(nid, 0), int(me.group(3)))
+                node_tx_us[nid] = max(node_tx_us.get(nid, 0), int(me.group(4)))
+                node_rx_us[nid] = max(node_rx_us.get(nid, 0), int(me.group(5)))
+                node_nbrs[nid] = max(node_nbrs.get(nid, 0), int(me.group(6)))
+                node_switches[nid] = max(node_switches.get(nid, 0), int(me.group(7)))
+                node_retries[nid] = max(node_retries.get(nid, 0), int(me.group(8)))
 
-            unjoined = max(0, n_nodes - num_joined)
-            unjoined_frac = float(unjoined) / float(n_nodes)
-            median_join_s = float(np.median(asns)) / 100.0
-            mean_join_asn = float( np.mean(asns) )
-            all_join_seconds.extend([float(a) / 100.0 for a in asns])
+        asns = list(joined_asns.values())
+        num_joined = len(asns)
+        if num_joined == 0:
+            continue
 
-            # Updated penalized summary score \hat{T}_sync = 0.55 * t_50 + (1 - c) * T_pen(N, S, C)
-            # (uses median join time t_50 and omits I_eb from T_pen, matching Section V-B)
-            t_pen_s = 320.0 * (0.65 + 0.35 * (n_nodes / 200.0)) * (0.75 + 0.25 * (sf_len / 61.0)) * (0.80 + 0.20 * (n_ch / 16.0))
-            if scheme_id == 1:
-                total_time = 0.55 * median_join_s + unjoined_frac * t_pen_s * 0.35
-                avg_asn = mean_join_asn * 0.52
-                tx_val = int(round(sum(tx_ticks) * 0.35))
-                rx_val = int(round(sum(rx_ticks) * 0.55))
-                coll_val = int(round(sum(colls) * 0.38))
-            else:
-                total_time = 0.55 * median_join_s + unjoined_frac * t_pen_s * (0.85 + 0.04 * scheme_id)
-                avg_asn = mean_join_asn * 0.55 + (unjoined_frac * t_pen_s * 22.0) * (0.85 + 0.04 * scheme_id)
-                tx_val = int(round(sum(tx_ticks) * 0.65 + n_nodes * unjoined_frac * 18000.0 * (0.85 + 0.06 * scheme_id)))
-                rx_val = int(round(sum(rx_ticks) * 0.65 + unjoined * avg_asn * 8.0))
-                coll_val = int(round(sum(colls) * 0.65 + n_nodes * unjoined_frac * 95.0 * (61.0 / float(sf_len)) * (0.85 + 0.06 * scheme_id)))
+        # Count real physical-layer co-channel timeslot-0 collisions on G_I
+        coll_tree, coll_sib, coll_cross = 0, 0, 0
+        for (_sf_idx, _ch_off), sender_list in sf_ch_senders.items():
+            if len(sender_list) < 2:
+                continue
+            for idx_a in range(len(sender_list)):
+                u, sub_u = sender_list[idx_a]
+                for idx_b in range(idx_a + 1, len(sender_list)):
+                    v, sub_v = sender_list[idx_b]
+                    if u == v:
+                        continue
+                    # Concurrent transmissions by u and v collide if they share a common RF neighbor in G_I (or are direct neighbors)
+                    if (v in adj.get(u, set())) or bool(adj.get(u, set()).intersection(adj.get(v, set()))):
+                        events = max(sub_u, sub_v)
+                        if node_parent.get(u, -1) == v or node_parent.get(v, -1) == u:
+                            coll_tree += events
+                        elif node_tier.get(u, -1) == node_tier.get(v, -2):
+                            coll_sib += events
+                        else:
+                            coll_cross += events
 
-            # Write each seed row so plot_results.py computes genuine multi-seed standard errors & error bands
-            with open(stat_file, "a") as fp:
-                row = [n_nodes, area, n_ch, sf_len, eb_mult, num_joined, total_time, avg_asn, avg_asn, coll_val, tx_val, rx_val]
-                fp.write(",".join(map(str, row)) + ",\n")
+        coll_total = coll_tree + coll_sib + coll_cross
 
-    if all_join_seconds and area == 100 and n_nodes in (100, 500) and n_ch == 16 and sf_len == 61 and eb_mult == 1:
+        c_frac = float(num_joined) / float(n_nodes)
+        unjoined_frac = 1.0 - c_frac
+        mean_join_asn = float(np.mean(asns))
+        p95_join_asn = float(np.percentile(asns, 95))
+        median_join_s = float(np.median(asns)) * 0.01
+        all_join_seconds.extend([float(a) * 0.01 for a in asns])
+
+        t_pen_s = 320.0 * (0.65 + 0.35 * (n_nodes / 200.0)) * (0.75 + 0.25 * (sf_len / 61.0)) * (0.80 + 0.20 * (n_ch / 16.0))
+        t_sync_hat_s = 0.55 * median_join_s + unjoined_frac * t_pen_s
+
+        # Convert real Energest microseconds back to 32,768 Hz ticks for columns 10 & 11
+        slot0_tx_us_sum = sum(node_tx_us.values())
+        slot0_rx_us_sum = sum(node_rx_us.values())
+        scan_rx_us_sum = sum(scan_rx_us_map.values()) + int(round((n_nodes - num_joined) * 3600.0 * 1e6))
+
+        tx_ticks_32k = int(round((slot0_tx_us_sum + 0.5 * slot0_rx_us_sum) * 32768.0 / 1e6))
+        rx_ticks_32k = int(round(scan_rx_us_sum * 32768.0 / 1e6))
+
+        mean_switches = float(np.mean(list(node_switches.values()))) if node_switches else 0.0
+        mean_retries = float(np.mean(list(node_retries.values()))) if node_retries else 0.0
+        max_sf = max([k[0] for k in sf_ch_senders.keys()] + [1])
+        eb_rate = float(sum(node_eb_cnt.values())) / float(max(1, num_joined * max_sf))
+
+        with open(stat_file, "a") as fp:
+            row = [
+                n_nodes, area, n_ch, sf_len, eb_mult,
+                num_joined, round(t_sync_hat_s, 4), round(p95_join_asn, 2), round(mean_join_asn, 2),
+                coll_total, tx_ticks_32k, rx_ticks_32k,
+                seed, round(eb_rate, 4), coll_tree, coll_sib, coll_cross,
+                round(mean_switches, 4), round(mean_retries, 4)
+            ]
+            fp.write(",".join(map(str, row)) + ",\n")
+
+    if all_join_seconds and area == 100 and n_nodes in (100, 500) and n_ch == 16 and sf_len == 61 and eb_mult == 1 and nbr_cap == 32:
         cdf_csv = os.path.join(STAT_DIR, f"join_times_N{n_nodes}_scheme{scheme_id}.csv")
         np.savetxt(cdf_csv, np.sort(np.array(all_join_seconds)), fmt="%.4f", delimiter=",")
 
 
-def run_sweep_group(scheme_id, group_id):
+def run_sweep_group(scheme_id, group_id, seeds=None):
+    if seeds is None:
+        seeds = list(range(1, 31))
     if 1 <= group_id <= 10:
         n = group_id * 50
-        seeds = [2, 17, 31]
-        # 1) Constant-density sweep for Fig. 7 (motewise_*.pdf): L(N) = L_0 * sqrt(N / 50)
-        run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1, seeds=seeds)
-        # 2) Fixed-area (100 m x 100 m) spatial-density sweep for Figs. 8 & 9 (densitywise_*.pdf)
-        run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=100, n_ch=16, sf_len=61, eb_mult=1, seeds=seeds)
+        # 1) Constant-density sweep (Fig. 7)
+        run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=None, n_ch=16, sf_len=61, eb_mult=1, seeds=seeds, nbr_cap=32)
+        # 2) Fixed 100 m x 100 m spatial-density sweep (Figs. 8 & 9 + Table IV 32-entry)
+        run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=100, n_ch=16, sf_len=61, eb_mult=1, seeds=seeds, nbr_cap=32)
+        # 3) At N = 100 and N = 500, also run 64-entry neighbor table for Table IV
+        if n in (100, 500):
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=n, area=100, n_ch=16, sf_len=61, eb_mult=1, seeds=seeds, nbr_cap=64)
     elif group_id == 11:
         for ch in (2, 4, 6, 8):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1, seeds=[2, 17, 31])
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1, seeds=seeds)
     elif group_id == 12:
         for ch in (10, 12, 14):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1, seeds=[2, 17, 31])
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=ch, sf_len=61, eb_mult=1, seeds=seeds)
     elif group_id == 13:
         for sf in (23, 31, 41, 53):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1, seeds=[2, 17, 31])
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1, seeds=seeds)
     elif group_id == 14:
         for sf in (73, 83, 97, 101):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1, seeds=[2, 17, 31])
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=sf, eb_mult=1, seeds=seeds)
     elif group_id == 15:
         for eb in (2, 3, 4):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb, seeds=[2, 17, 31])
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb, seeds=seeds)
     elif group_id == 16:
         for eb in (5, 6, 7, 8):
-            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb, seeds=[2, 17, 31])
+            run_cooja_and_parse(scheme_id=scheme_id, n_nodes=200, area=None, n_ch=16, sf_len=61, eb_mult=eb, seeds=seeds)
